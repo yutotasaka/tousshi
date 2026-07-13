@@ -300,6 +300,44 @@ VALUATION_METRICS_TOOL = {
 }
 
 
+def get_short_interest(symbol: str) -> dict:
+    """空売り情報：空売り比率、浮動株に対する空売り比率、前月比の増減。"""
+    try:
+        info = yf.Ticker(symbol).info or {}
+        shares_short = info.get("sharesShort")
+        shares_short_prior = info.get("sharesShortPriorMonth")
+        change = None
+        if shares_short and shares_short_prior:
+            change = _pct_change(shares_short, shares_short_prior)
+        return {
+            "symbol": symbol.upper(),
+            "short_ratio_days": _safe(info.get("shortRatio")),  # 日数（買い戻しにかかる日数）
+            "short_pct_of_float": _safe(
+                info.get("shortPercentOfFloat", 0) * 100 if info.get("shortPercentOfFloat") is not None else None, 2),
+            "shares_short": shares_short,
+            "shares_short_prior_month": shares_short_prior,
+            "shares_short_change_pct": change,  # 前月比：プラス=空売り増加(弱気)
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+SHORT_INTEREST_TOOL = {
+    "name": "get_short_interest",
+    "description": (
+        "Get short interest data: short ratio (days to cover), short % of float, "
+        "and month-over-month change in shares short. Rising short interest signals "
+        "growing bearish/institutional short positioning; very high short % can also "
+        "mean short-squeeze potential."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"symbol": {"type": "string"}},
+        "required": ["symbol"],
+    },
+}
+
+
 def dispatch(tool_name: str, tool_input: dict) -> str:
     sym = tool_input.get("symbol", "")
     if tool_name == "get_earnings_history":
@@ -310,6 +348,8 @@ def dispatch(tool_name: str, tool_input: dict) -> str:
         result = get_balance_sheet_summary(sym)
     elif tool_name == "get_valuation_metrics":
         result = get_valuation_metrics(sym)
+    elif tool_name == "get_short_interest":
+        result = get_short_interest(sym)
     else:
         result = {"error": f"Unknown tool: {tool_name}"}
     return json.dumps(result, ensure_ascii=False)

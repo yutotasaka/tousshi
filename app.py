@@ -64,6 +64,90 @@ def fmt_shares(v) -> str:
         return "—"
 
 
+def render_evaluation(sym: str):
+    """銘柄の総合評価（スコア・1ヶ月見通し・好材料/悪材料・空売り・ニュース）を描画。"""
+    from tools.scoring import evaluate_stock
+    ev = evaluate_stock(sym)
+
+    score = ev.get("total_score", 0)
+    rating = ev.get("rating", "—")
+    # スコアで色分け
+    if score >= 60:
+        box = st.success
+    elif score >= 45:
+        box = st.info
+    else:
+        box = st.warning
+    box(f"### 総合評価： {rating}　（スコア {score}/100）\n{ev.get('outlook_1m','')}")
+
+    # サブスコア
+    sub = ev.get("sub_scores", {})
+    labels = {
+        "technical": "テクニカル", "fundamental": "ファンダ",
+        "supply_demand": "需給(空売り)", "catalyst": "決算材料", "news": "ニュース",
+    }
+    if sub:
+        scols = st.columns(len(sub))
+        for i, (k, lbl) in enumerate([(k, labels.get(k, k)) for k in sub]):
+            v = sub[k]  # -100〜+100
+            mark = "🟢" if v > 15 else ("🔴" if v < -15 else "🟡")
+            scols[i].metric(lbl, f"{mark}{v:+d}")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**✅ 好材料**")
+        pos = ev.get("positives", [])
+        if pos:
+            for p in pos:
+                st.markdown(f"- {p}")
+        else:
+            st.caption("特筆すべき好材料なし")
+    with c2:
+        st.markdown("**⚠️ 悪材料・リスク**")
+        neg = ev.get("negatives", [])
+        if neg:
+            for n in neg:
+                st.markdown(f"- {n}")
+        else:
+            st.caption("特筆すべき悪材料なし")
+
+    # 想定レンジ
+    rng = ev.get("expected_range", {})
+    if rng.get("support") and rng.get("resistance"):
+        st.caption(
+            f"📊 当面の想定レンジ：サポート {rng['support']:,.0f} 〜 レジスタンス {rng['resistance']:,.0f}"
+            f"（現在 {rng.get('last_price', '—')}）"
+        )
+
+    # 空売り
+    si = ev.get("short_interest")
+    if si:
+        parts = []
+        if si.get("short_pct_of_float") is not None:
+            parts.append(f"空売り比率 {si['short_pct_of_float']}%")
+        if si.get("short_ratio_days") is not None:
+            parts.append(f"買い戻し日数 {si['short_ratio_days']}日")
+        if si.get("shares_short_change_pct") is not None:
+            parts.append(f"前月比 {si['shares_short_change_pct']:+.0f}%")
+        if parts:
+            st.caption("🩳 機関の空売り： " + " / ".join(parts))
+
+    # ニュース
+    articles = ev.get("news", [])
+    if articles:
+        with st.expander(f"📰 関連ニュース（{ev.get('news_tone','')}）", expanded=False):
+            for a in articles:
+                icon = {"好材料": "🟢", "悪材料": "🔴"}.get(a["sentiment"], "⚪")
+                date = a.get("published") or ""
+                title = a["title"]
+                if a.get("link"):
+                    st.markdown(f"{icon} [{title}]({a['link']}) — {a.get('publisher','')} {date}")
+                else:
+                    st.markdown(f"{icon} {title} — {a.get('publisher','')} {date}")
+    st.caption("※ " + ev.get("disclaimer", ""))
+    return ev
+
+
 # ── Session state for portfolio (survives reruns even if file write fails) ───
 if "holdings" not in st.session_state:
     st.session_state.holdings = load_portfolio()
@@ -294,47 +378,12 @@ if is_portfolio_mode:
                         f"{ups:+.1f}%" if ups is not None else None,
                     )
 
-                    # テクニカル
-                    with st.spinner(f"{sym} のテクニカルを計算中..."):
+                    # 総合評価（テクニカル・ファンダ・空売り・決算材料・ニュースを統合）
+                    with st.spinner(f"{sym} を評価中..."):
                         try:
-                            hist = get_price_history(sym, "6mo")
-                            if "data" in hist:
-                                ta = run_technical_analysis(hist["data"])
-                                if "error" not in ta:
-                                    t1, t2, t3, t4 = st.columns(4)
-                                    t1.metric("RSI(14)", ta.get("rsi14", "—"))
-                                    t2.metric("トレンド", "上昇" if ta.get("trend") == "UPTREND" else "下落")
-                                    t3.metric("サポート", f"{ta.get('support_20d', 0):,.0f}")
-                                    t4.metric("レジスタンス", f"{ta.get('resistance_20d', 0):,.0f}")
-                                    if ta.get("signals"):
-                                        for sig in ta["signals"]:
-                                            st.info(f"📶 {sig}")
+                            render_evaluation(sym)
                         except Exception as e:
-                            st.caption(f"テクニカル取得エラー: {e}")
-
-                    # バリュエーション・次回決算
-                    try:
-                        val = get_valuation_metrics(sym)
-                        if "error" not in val:
-                            v = val.get("valuation", {})
-                            p = val.get("profitability", {})
-                            st.write(
-                                f"**割安度**: PER {v.get('trailing_pe') or '—'} / "
-                                f"予想PER {v.get('forward_pe') or '—'} / "
-                                f"PEG {v.get('peg_ratio') or '—'} / "
-                                f"PBR {v.get('price_to_book') or '—'} ｜ "
-                                f"**収益性**: ROE {p.get('roe_pct') or '—'}% / "
-                                f"営業利益率 {p.get('operating_margin_pct') or '—'}%"
-                            )
-                    except Exception:
-                        pass
-                    try:
-                        cal = get_earnings_calendar(sym)
-                        if "error" not in cal and cal.get("next_earnings_dates"):
-                            st.write(f"📅 **次回決算**: {cal['next_earnings_dates'][0]}"
-                                     + (f"（予想EPS {cal['eps_estimate_avg']}）" if cal.get("eps_estimate_avg") else ""))
-                    except Exception:
-                        pass
+                            st.caption(f"評価の生成に失敗しました: {e}")
 
             st.success("ダッシュボード表示完了")
     else:
@@ -380,6 +429,14 @@ elif is_search_mode:
             is_jp = sym.endswith(".T")
             cur_label = "円" if is_jp else "ドル"
             st.subheader(f"{'🇯🇵' if is_jp else '🇺🇸'} {name}（{sym}）")
+
+            # ── 総合評価（最上部に表示） ──
+            try:
+                render_evaluation(sym)
+            except Exception as e:
+                st.caption(f"総合評価の生成に失敗しました: {e}")
+            st.divider()
+
             if val.get("sector"):
                 st.caption(f"セクター: {val.get('sector')} ｜ 時価総額: {val['market_cap']:,} " + ("円" if is_jp else "ドル") if val.get("market_cap") else f"セクター: {val.get('sector')}")
 
@@ -493,29 +550,59 @@ elif is_search_mode:
 
 else:
     st.header("🌐 マーケットダッシュボード")
-    st.caption("世界の株価指数・為替・米国債利回り・コモディティを一覧表示します")
+    st.caption("資金フロー（どこにお金が流れたか）・世界の指数・為替・金利・注目ニュースを表示します")
 
     if st.button("🌐 今の相場を表示", type="primary", use_container_width=True):
-        from tools.macro_data import get_global_macro_snapshot
+        from tools.macro_data import get_global_macro_snapshot, get_fund_flows
+        from tools.news_feed import get_stock_news
 
+        def render_group(title, items, price_fmt="{:,.2f}"):
+            st.markdown(f"**{title}**")
+            cols = st.columns(4)
+            for i, item in enumerate(items):
+                with cols[i % 4]:
+                    if "error" in item:
+                        st.caption(f"{item['label']}: 取得不可")
+                    else:
+                        st.metric(
+                            item["label"],
+                            price_fmt.format(item["price"]),
+                            f"{item['change_1d_pct']:+.2f}%" if item.get("change_1d_pct") is not None else None,
+                        )
+
+        # ── 資金フロー分析 ──
+        with st.spinner("資金フローを分析中..."):
+            try:
+                flow = get_fund_flows()
+                regime = flow.get("regime", "")
+                box = st.success if "オン" in regime else (st.warning if "オフ" in regime else st.info)
+                box(f"### 💰 資金フロー判定： {regime}")
+                for sig in flow.get("signals", []):
+                    st.markdown(f"- {sig}")
+                if flow.get("rotation"):
+                    st.markdown(f"- 🔄 **セクター循環**: {flow['rotation']}")
+
+                fc1, fc2 = st.columns(2)
+                with fc1:
+                    st.markdown("**📈 資金が向かったセクター**")
+                    for s in flow.get("sector_winners", []):
+                        st.markdown(f"- 🟢 {s['label']} {s['change_pct']:+.2f}%")
+                with fc2:
+                    st.markdown("**📉 資金が抜けたセクター**")
+                    for s in flow.get("sector_losers", []):
+                        st.markdown(f"- 🔴 {s['label']} {s['change_pct']:+.2f}%")
+
+                st.markdown("**🔀 主要アセットの騰落（株・債券・金・ドル・原油・暗号資産）**")
+                render_group("", flow.get("assets", []), "{:,.2f}")
+            except Exception as e:
+                st.caption(f"資金フロー分析エラー: {e}")
+
+        st.divider()
+
+        # ── グローバル指数・為替・金利・コモディティ ──
         with st.spinner("世界のマーケットデータを取得中...（30秒ほど）"):
             try:
                 macro = get_global_macro_snapshot()
-
-                def render_group(title, items, price_fmt="{:,.2f}"):
-                    st.markdown(f"**{title}**")
-                    cols = st.columns(4)
-                    for i, item in enumerate(items):
-                        with cols[i % 4]:
-                            if "error" in item:
-                                st.caption(f"{item['label']}: 取得不可")
-                            else:
-                                st.metric(
-                                    item["label"],
-                                    price_fmt.format(item["price"]),
-                                    f"{item['change_1d_pct']:+.2f}%" if item.get("change_1d_pct") is not None else None,
-                                )
-
                 render_group("📊 世界の株価指数", macro.get("global_indices", []), "{:,.0f}")
                 st.divider()
                 render_group("💱 為替", macro.get("fx", []), "{:,.3f}")
@@ -523,7 +610,39 @@ else:
                 render_group("🏦 米国債利回り (%)", macro.get("us_treasury_yields", []), "{:.2f}")
                 st.divider()
                 render_group("🛢️ コモディティ", macro.get("commodities", []), "{:,.1f}")
-                st.success("表示完了")
             except Exception as e:
                 st.error(f"データ取得に失敗しました: {e}")
+
+        st.divider()
+
+        # ── 注目ニュース（市場全体） ──
+        st.markdown("### 📰 注目ニュース（政治・世界経済・市場）")
+        with st.spinner("ニュースを取得中..."):
+            seen = set()
+            shown = 0
+            for proxy in ["SPY", "^GSPC", "^N225", "DX-Y.NYB"]:
+                try:
+                    nf = get_stock_news(proxy, 8)
+                    for a in nf.get("articles", []):
+                        key = a["title"]
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        icon = {"好材料": "🟢", "悪材料": "🔴"}.get(a["sentiment"], "⚪")
+                        date = a.get("published") or ""
+                        if a.get("link"):
+                            st.markdown(f"{icon} [{a['title']}]({a['link']}) — {a.get('publisher','')} {date}")
+                        else:
+                            st.markdown(f"{icon} {a['title']} — {a.get('publisher','')} {date}")
+                        shown += 1
+                        if shown >= 15:
+                            break
+                except Exception:
+                    continue
+                if shown >= 15:
+                    break
+            if shown == 0:
+                st.caption("ニュースを取得できませんでした")
+
+        st.success("表示完了")
 
