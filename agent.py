@@ -22,6 +22,13 @@ from tools.portfolio import (
     PORTFOLIO_RISK_TOOL,
     dispatch as portfolio_dispatch,
 )
+from tools.fundamentals import (
+    EARNINGS_HISTORY_TOOL,
+    EARNINGS_CALENDAR_TOOL,
+    BALANCE_SHEET_TOOL,
+    VALUATION_METRICS_TOOL,
+    dispatch as fundamentals_dispatch,
+)
 
 CUSTOM_TOOLS = [
     MARKET_SNAPSHOT_TOOL,
@@ -29,6 +36,10 @@ CUSTOM_TOOLS = [
     TECHNICAL_ANALYSIS_TOOL,
     PORTFOLIO_SNAPSHOT_TOOL,
     PORTFOLIO_RISK_TOOL,
+    EARNINGS_HISTORY_TOOL,
+    EARNINGS_CALENDAR_TOOL,
+    BALANCE_SHEET_TOOL,
+    VALUATION_METRICS_TOOL,
 ]
 ALL_TOOLS = CUSTOM_TOOLS + [WEB_SEARCH_TOOL]
 
@@ -48,6 +59,15 @@ SYSTEM_PROMPT = """あなたは経験豊富なマクロ系ヘッジファンド�
 - ポートフォリオ全体のリスク（ベータ、集中リスク、相関）
 - 監視すべき重要な価格・指標レベル
 - リバランス・ヘッジの提案
+
+ファンダメンタルズ分析ツールが利用可能です：
+- get_earnings_history: 四半期・年次の売上/純利益/EPSとYoY・QoQ成長率
+- get_earnings_calendar: 次回決算日・予想EPS/売上・過去のサプライズ実績
+- get_balance_sheet_summary: 現金・負債・ネットキャッシュ・FCF
+- get_valuation_metrics: PER/PEG/PBR/EV/EBITDA/ROE/ROA/マージン/配当
+
+個別銘柄を分析する際は、テクニカルだけでなく必ずこれらのファンダメンタルズも確認し、
+バリュエーションの妥当性・決算カタリスト・財務健全性を統合した判断を示してください。
 
 分析は日本語で行い、機関投資家が実際に意思決定に使用できるレベルの深度で記述してください。
 数値とロジックを明確に示し、曖昧な表現を避けてください。"""
@@ -105,14 +125,20 @@ get_portfolio_risk でポートフォリオベータ・相関・集中リスク�
 **Step 4: 各銘柄のテクニカル分析**
 保有銘柄それぞれの3ヶ月チャートを取得しテクニカル指標を算出する。
 
-**Step 5: 最新材料収集**
+**Step 5: ファンダメンタルズ分析**
+各保有銘柄について get_valuation_metrics（PER/PEG/ROE等）と get_earnings_calendar
+（次回決算日・予想・過去サプライズ）を取得する。主要ポジションは get_earnings_history
+と get_balance_sheet_summary で業績トレンド・財務健全性も確認する。
+
+**Step 6: 最新材料収集**
 保有銘柄・関連セクターの最新ニュース・アナリストレポートをウェブ検索で収集する。
 
-**Step 6: 総合レポート作成**
+**Step 7: 総合レポート作成**
 
 ---
 ## 📊 ポートフォリオ現況サマリー
 ## 💰 各ポジション分析（損益・アナリスト評価・テクニカル）
+## 📑 ファンダメンタルズ評価（バリュエーション・業績トレンド・次回決算）
 ## ⚖️ リスク評価（ベータ・集中リスク・相関）
 ## 📰 最新材料・カタリスト
 ## 🎯 監視すべき重要レベル
@@ -131,6 +157,13 @@ def _dispatch_tool(tool_name: str, tool_input: dict) -> str:
         return ta_dispatch(tool_name, tool_input)
     elif tool_name in ("get_portfolio_snapshot", "get_portfolio_risk"):
         return portfolio_dispatch(tool_name, tool_input)
+    elif tool_name in (
+        "get_earnings_history",
+        "get_earnings_calendar",
+        "get_balance_sheet_summary",
+        "get_valuation_metrics",
+    ):
+        return fundamentals_dispatch(tool_name, tool_input)
     else:
         return json.dumps({"error": f"Unknown local tool: {tool_name}"})
 
