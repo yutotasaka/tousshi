@@ -87,14 +87,21 @@ SYSTEM_PROMPT = """あなたは経験豊富なマクロ系ヘッジファンド�
 一社だけ伸びている場合はシェア変動や一時要因の可能性を指摘してください。
 
 分析は日本語で行い、機関投資家が実際に意思決定に使用できるレベルの深度で記述してください。
-数値とロジックを明確に示し、曖昧な表現を避けてください。"""
+数値とロジックを明確に示し、曖昧な表現を避けてください。
+
+**重要: 金額は日本円ベースで報告してください。** ユーザーは日本の投資家です。
+米国株の損益・評価額はドル建てとあわせて必ず円換算（現在のドル円レート使用）も併記し、
+ポートフォリオ合計は円で示してください。ドル円の変動がポートフォリオに与える
+為替影響（円高/円安リスク）も必ず分析に含めてください。
+日本株（.Tティッカー）は円のままで扱ってください。"""
 
 MARKET_PROMPT = """本日（{date}）の機関投資家向け総合マーケット分析を実施してください。
 
 以下のステップで体系的に分析を進めてください：
 
 **Step 1: マーケット概況**
-主要指数（SPX、NDX、DJI、RUT、VIX、日経225）の現在値と前日比を取得する。
+主要指数（日経225、TOPIX、SPX、NDX、DJI、RUT、VIX）の現在値と前日比を取得する。
+日本市場と米国市場の両方を必ずカバーすること。
 
 **Step 2: セクター分析**
 全11セクターETFの騰落率を取得し、資金フローとローテーションの方向性を分析する。
@@ -223,9 +230,11 @@ def stream_analysis(
     date_str = datetime.now().strftime("%Y年%m月%d日")
 
     if mode == "portfolio" and holdings:
-        portfolio_text = "\n".join(
-            f"- {h['symbol']}: {h['shares']}株 @ ${h['avg_cost']}" for h in holdings
-        )
+        def _fmt_holding(h):
+            sym = str(h["symbol"])
+            unit = "円" if sym.endswith(".T") else "ドル"
+            return f"- {sym}: {h['shares']}株 @ {h['avg_cost']}{unit}"
+        portfolio_text = "\n".join(_fmt_holding(h) for h in holdings)
         extra = f"\n\n**補足情報**: {extra_context}" if extra_context else ""
         if target:
             extra += f"\n**追加指示**: {target}"
