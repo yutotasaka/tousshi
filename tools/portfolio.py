@@ -40,14 +40,21 @@ def _detect_currency(info: dict, symbol: str) -> str:
     return "JPY" if symbol.endswith(".T") else "USD"
 
 
-def get_portfolio_snapshot(holdings: list[dict]) -> dict:
+def get_portfolio_snapshot(holdings: list[dict], us_valuation_haircut_pct: float = 0.0) -> dict:
     """
     holdings: [{"symbol": "7203.T", "shares": 100, "avg_cost": 2500.0}, ...]
     avg_cost is in the security's native currency (JPY for .T, USD for US stocks).
     All portfolio totals are reported in JPY. USD positions are converted at the
     current USDJPY rate.
+
+    us_valuation_haircut_pct: 米国株の評価額（円）から差し引くスプレッド調整率(%)。
+      PayPay証券などブローカーが評価額から手数料を引いて表示している分を再現するための値。
     """
     usdjpy = get_usdjpy_rate()
+    try:
+        haircut = max(0.0, float(us_valuation_haircut_pct)) / 100.0
+    except (TypeError, ValueError):
+        haircut = 0.0
     results = []
     total_value_jpy = 0.0
     total_cost_jpy = 0.0
@@ -102,6 +109,9 @@ def get_portfolio_snapshot(holdings: list[dict]) -> dict:
 
             cost_basis_jpy = cost_basis * cost_fx
             market_value_jpy = market_value * fx
+            # 米国株はブローカーのスプレッド分を評価額から控除（PayPay等に合わせる）
+            if currency == "USD" and haircut > 0:
+                market_value_jpy *= (1 - haircut)
             total_value_jpy += market_value_jpy
             total_cost_jpy += cost_basis_jpy
 

@@ -239,6 +239,16 @@ if is_portfolio_mode:
         st.subheader("📈 ダッシュボード")
         st.caption("データ取得に数十秒かかります。")
 
+        haircut_pct = st.number_input(
+            "PayPay評価調整：米国株の評価額を◯%控除（任意）",
+            min_value=0.0, max_value=5.0, step=0.05, value=0.0, format="%.2f",
+            help=(
+                "PayPay証券の評価額はスプレッド（手数料）が引かれているため、アプリの方が数%高く出ます。"
+                "ここに調整率を入れると米国株の評価額をその分控除してPayPayに近づけます。"
+                "PayPayと見比べて、一致する値（目安0.5〜1.0）に調整してください。0なら市場価格のまま。"
+            ),
+        )
+
         if st.button("💹 ダッシュボードを表示", type="primary", use_container_width=True):
             from tools.portfolio import get_portfolio_snapshot
             from tools.market_data import get_price_history
@@ -248,7 +258,7 @@ if is_portfolio_mode:
             # 1) 損益サマリー
             with st.spinner("損益を計算中..."):
                 try:
-                    snap = get_portfolio_snapshot(holdings)
+                    snap = get_portfolio_snapshot(holdings, us_valuation_haircut_pct=haircut_pct)
                     s = snap["summary"]
                     m1, m2, m3, m4 = st.columns(4)
                     m1.metric("評価額合計", yen(s["total_value_jpy"]))
