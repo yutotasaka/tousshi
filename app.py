@@ -140,38 +140,78 @@ if is_portfolio_mode:
     holdings = st.session_state.holdings
 
     with st.expander("➕ 銘柄を追加・変更", expanded=len(holdings) == 0):
+        input_mode = st.radio(
+            "入力方法",
+            ["株数で入力", "投資金額で入力（株数を自動計算）"],
+            horizontal=True,
+            help="投資金額モード：投資した合計金額と取得単価から株数を自動計算します。取得単価を空欄(0)にすると現在の株価で計算します。",
+        )
+        by_amount = "金額" in input_mode
+
         with st.form("add_holding", clear_on_submit=True):
-            col1, col2, col3 = st.columns([2, 1, 2])
+            col1, col2, col3 = st.columns([2, 2, 2])
             with col1:
                 new_sym = st.text_input("証券コード / ティッカー", placeholder="7203 または AAPL")
             with col2:
-                new_shares = st.number_input("株数", min_value=0.0, step=100.0, value=0.0)
+                if by_amount:
+                    new_amount = st.number_input(
+                        "投資金額（日本株:円 / 米国株:ドル）",
+                        min_value=0.0, step=10000.0, value=0.0,
+                    )
+                    new_shares = 0.0
+                else:
+                    new_shares = st.number_input("株数", min_value=0.0, step=100.0, value=0.0)
+                    new_amount = 0.0
             with col3:
                 new_cost = st.number_input(
-                    "取得単価（日本株:円 / 米国株:ドル）",
+                    "取得単価（日本株:円 / 米国株:ドル）" + ("　※空欄(0)=現在値で計算" if by_amount else ""),
                     min_value=0.0, step=1.0, value=0.0,
                 )
             add_btn = st.form_submit_button("追加 / 更新", use_container_width=True)
 
         if add_btn:
             sym = normalize_input_symbol(new_sym)
+            err = None
             if not sym:
-                st.error("証券コードまたはティッカーを入力してください")
-            elif new_shares <= 0:
-                st.error("株数を入力してください")
-            elif new_cost <= 0:
-                st.error("取得単価を入力してください")
+                err = "証券コードまたはティッカーを入力してください"
+            elif by_amount and new_amount <= 0:
+                err = "投資金額を入力してください"
+            elif not by_amount and new_shares <= 0:
+                err = "株数を入力してください"
+            elif not by_amount and new_cost <= 0:
+                err = "取得単価を入力してください"
+
+            if err:
+                st.error(err)
             else:
+                cost = new_cost
+                if by_amount:
+                    # 取得単価が未入力なら現在値を取得して使う
+                    if cost <= 0:
+                        with st.spinner(f"{sym} の現在値を取得中..."):
+                            try:
+                                import yfinance as yf
+                                hist = yf.Ticker(sym).history(period="2d", auto_adjust=True)
+                                if hist is not None and not hist.empty:
+                                    cost = float(hist["Close"].iloc[-1])
+                            except Exception:
+                                cost = 0.0
+                    if cost <= 0:
+                        st.error(f"{sym} の株価を取得できませんでした。取得単価を手入力してください。")
+                        st.stop()
+                    new_shares = round(new_amount / cost, 2)
+                    # 日本株は通常100株単位なので端数は情報表示のみ
+                    st.info(f"計算結果: {new_amount:,.0f} ÷ 単価 {cost:,.2f} = **{new_shares:,.2f} 株** として登録します")
+
                 existing = next((h for h in holdings if h["symbol"] == sym), None)
                 if existing:
                     existing["shares"] = new_shares
-                    existing["avg_cost"] = new_cost
-                    st.success(f"{sym} を更新しました")
+                    existing["avg_cost"] = round(cost, 4)
+                    st.success(f"{sym} を更新しました（{new_shares:,.2f}株 @ {cost:,.2f}）")
                 else:
-                    holdings.append({"symbol": sym, "shares": new_shares, "avg_cost": new_cost})
-                    st.success(f"{sym} を追加しました")
+                    holdings.append({"symbol": sym, "shares": new_shares, "avg_cost": round(cost, 4)})
+                    st.success(f"{sym} を追加しました（{new_shares:,.2f}株 @ {cost:,.2f}）")
                 save_portfolio(holdings)
-                st.rerun()
 
     if holdings:
         st.subheader("保有銘柄")
