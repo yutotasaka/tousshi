@@ -13,7 +13,17 @@ def normalize_symbol(symbol: str) -> str:
 
 
 def get_usdjpy_rate() -> float:
-    """Current USD/JPY rate; fallback to 150.0 if unavailable."""
+    """Current USD/JPY rate; fallback to 150.0 if unavailable. Cached in Streamlit if available."""
+    try:
+        import streamlit as st
+        if not hasattr(get_usdjpy_rate, "_cached"):
+            get_usdjpy_rate._cached = st.cache_data(ttl=300)(_fetch_usdjpy_rate)
+        return get_usdjpy_rate._cached()
+    except Exception:
+        return _fetch_usdjpy_rate()
+
+
+def _fetch_usdjpy_rate() -> float:
     try:
         hist = yf.Ticker("USDJPY=X").history(period="2d", auto_adjust=True)
         if len(hist) >= 1:
