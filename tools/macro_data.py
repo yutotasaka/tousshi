@@ -23,15 +23,17 @@ RATES = {
 
 GLOBAL_INDICES = {
     "^GSPC": "S&P500(米)",
+    "^DJI": "NYダウ(米)",
+    "^IXIC": "NASDAQ(米)",
+    "^SOX": "半導体(SOX)",
     "^N225": "日経225(日)",
+    "1306.T": "TOPIX連動ETF(日)",
     "^GDAXI": "DAX(独)",
     "^FTSE": "FTSE100(英)",
-    "^FCHI": "CAC40(仏)",
     "000001.SS": "上海総合(中)",
     "^HSI": "ハンセン(香港)",
     "^KS11": "KOSPI(韓)",
     "^NSEI": "NIFTY50(印)",
-    "^BVSP": "ボベスパ(伯)",
 }
 
 COMMODITIES = {

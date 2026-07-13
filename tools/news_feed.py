@@ -21,6 +21,30 @@ _NEGATIVE = [
 ]
 
 
+# 見出しの趣旨を日本語タグ化するためのキーワード辞書（順に優先）
+_TOPIC_TAGS = [
+    ("【決算】", ["earnings", "quarterly results", "revenue", "profit", "eps", "guidance", "forecast", "outlook", "beat", "miss"]),
+    ("【アナリスト】", ["analyst", "upgrade", "downgrade", "price target", "rating", "initiate", "overweight", "underweight", "buy rating", "sell rating"]),
+    ("【M&A・提携】", ["acquisition", "acquire", "merger", "takeover", "deal", "partnership", "stake", "joint venture", "buyout"]),
+    ("【新製品・技術】", ["launch", "unveil", "new product", "chip", "ai ", " ai", "model", "technology", "innovation", "patent", "breakthrough"]),
+    ("【規制・訴訟】", ["lawsuit", "sue", "probe", "investigation", "regulator", "antitrust", "fine", "ban", "court", "settlement", "sec ", "ftc"]),
+    ("【人事・経営】", ["ceo", "cfo", "executive", "resign", "appoint", "layoff", "job cuts", "restructuring", "hire"]),
+    ("【配当・還元】", ["dividend", "buyback", "repurchase", "split"]),
+    ("【金利・中銀】", ["fed", "fomc", "rate", "interest", "boj", "ecb", "central bank", "powell", "inflation", "cpi"]),
+    ("【政治・地政学】", ["tariff", "trump", "election", "china", "trade war", "sanction", "war", "geopolit", "congress", "government"]),
+    ("【株価動向】", ["stock", "shares", "surge", "plunge", "rally", "jump", "fall", "drop", "record high", "52-week"]),
+]
+
+
+def _jp_gist(title: str) -> str:
+    """英語見出しから日本語の趣旨タグを推定。"""
+    t = (title or "").lower()
+    for tag, kws in _TOPIC_TAGS:
+        if any(k in t for k in kws):
+            return tag
+    return "【その他】"
+
+
 def _classify(title: str) -> str:
     t = (title or "").lower()
     pos = sum(1 for w in _POSITIVE if w in t)
@@ -79,6 +103,7 @@ def _parse_item(item: dict) -> dict | None:
         "link": link,
         "published": published,
         "sentiment": _classify(title),
+        "topic_jp": _jp_gist(title),
     }
 
 

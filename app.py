@@ -85,6 +85,7 @@ def render_evaluation(sym: str):
     labels = {
         "technical": "テクニカル", "fundamental": "ファンダ",
         "supply_demand": "需給(空売り)", "catalyst": "決算材料", "news": "ニュース",
+        "market_position": "市場評価",
     }
     if sub:
         scols = st.columns(len(sub))
@@ -92,6 +93,13 @@ def render_evaluation(sym: str):
             v = sub[k]  # -100〜+100
             mark = "🟢" if v > 15 else ("🔴" if v < -15 else "🟡")
             scols[i].metric(lbl, f"{mark}{v:+d}")
+
+    # 言葉の判定（良い/普通/悪い）
+    verdicts = ev.get("verdicts", {})
+    if verdicts:
+        st.markdown("**📝 わかりやすい判定**")
+        for name, vd in verdicts.items():
+            st.markdown(f"- **{name}：{vd['judge']}** — {vd['why']}")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -138,12 +146,13 @@ def render_evaluation(sym: str):
         with st.expander(f"📰 関連ニュース（{ev.get('news_tone','')}）", expanded=False):
             for a in articles:
                 icon = {"好材料": "🟢", "悪材料": "🔴"}.get(a["sentiment"], "⚪")
+                topic = a.get("topic_jp", "")
                 date = a.get("published") or ""
                 title = a["title"]
                 if a.get("link"):
-                    st.markdown(f"{icon} [{title}]({a['link']}) — {a.get('publisher','')} {date}")
+                    st.markdown(f"{icon} {topic} [{title}]({a['link']}) — {a.get('publisher','')} {date}")
                 else:
-                    st.markdown(f"{icon} {title} — {a.get('publisher','')} {date}")
+                    st.markdown(f"{icon} {topic} {title} — {a.get('publisher','')} {date}")
     st.caption("※ " + ev.get("disclaimer", ""))
     return ev
 
@@ -629,11 +638,12 @@ else:
                             continue
                         seen.add(key)
                         icon = {"好材料": "🟢", "悪材料": "🔴"}.get(a["sentiment"], "⚪")
+                        topic = a.get("topic_jp", "")
                         date = a.get("published") or ""
                         if a.get("link"):
-                            st.markdown(f"{icon} [{a['title']}]({a['link']}) — {a.get('publisher','')} {date}")
+                            st.markdown(f"{icon} {topic} [{a['title']}]({a['link']}) — {a.get('publisher','')} {date}")
                         else:
-                            st.markdown(f"{icon} {a['title']} — {a.get('publisher','')} {date}")
+                            st.markdown(f"{icon} {topic} {a['title']} — {a.get('publisher','')} {date}")
                         shown += 1
                         if shown >= 15:
                             break

@@ -6,9 +6,16 @@
 ※これは機械的なスコアリングであり、将来を保証する予想ではありません。
   投資判断の補助として使ってください。
 """
+import yfinance as yf
+
 from tools.market_data import get_price_history
 from tools.technical_analysis import run_technical_analysis
-from tools.fundamentals import get_valuation_metrics, get_earnings_calendar, get_short_interest
+from tools.fundamentals import (
+    get_valuation_metrics,
+    get_earnings_calendar,
+    get_short_interest,
+    get_balance_sheet_summary,
+)
 from tools.news_feed import get_stock_news
 
 
@@ -33,6 +40,11 @@ def evaluate_stock(symbol: str) -> dict:
     short = get_short_interest(symbol)
     cal = get_earnings_calendar(symbol)
     news = get_stock_news(symbol, 10)
+    bs = get_balance_sheet_summary(symbol)
+    try:
+        info = yf.Ticker(symbol).info or {}
+    except Exception:
+        info = {}
 
     # ══════════ 1. テクニカル ══════════
     tscore = 0
@@ -169,13 +181,130 @@ def evaluate_stock(symbol: str) -> dict:
             nscore -= 10
     sub["news"] = max(-100, min(100, nscore))
 
+    # ══════════ 6. 市場ポジション（52週・アナリスト・機関保有・ベータ・財務） ══════════
+    mscore = 0
+
+    # 52週高値・安値からの位置
+    last_p = _num(ta.get("last_price")) if ta and "error" not in ta else _num(info.get("currentPrice"))
+    hi52 = _num(info.get("fiftyTwoWeekHigh"))
+    lo52 = _num(info.get("fiftyTwoWeekLow"))
+    if last_p and hi52 and lo52 and hi52 > lo52:
+        pos52 = (last_p - lo52) / (hi52 - lo52) * 100
+        off_high = (hi52 - last_p) / hi52 * 100
+        if pos52 > 90:
+            mscore += 5; positives.append(f"52週高値圏（高値まで-{off_high:.1f}%）：強いモメンタム。ただし高値掴みに注意")
+        elif pos52 < 15:
+            mscore -= 5; negatives.append(f"52週安値圏：下落トレンドが長い（逆張り妙味はあるがナイフキャッチ注意）")
+
+    # アナリスト目標株価との乖離・推奨
+    tgt = _num(info.get("targetMeanPrice"))
+    rec = (info.get("recommendationKey") or "").lower()
+    n_analysts = info.get("numberOfAnalystOpinions") or 0
+    if tgt and last_p and n_analysts >= 3:
+        upside = (tgt - last_p) / last_p * 100
+        if upside > 15:
+            mscore += 15; positives.append(f"アナリスト目標株価まで +{upside:.0f}%の上値余地（{n_analysts}名の平均）")
+        elif upside < -5:
+            mscore -= 15; negatives.append(f"株価がアナリスト目標を {-upside:.0f}%超過（過熱の可能性）")
+    if rec:
+        if "strong_buy" in rec or rec == "buy":
+            mscore += 10; positives.append(f"アナリスト推奨：買い（{rec}）")
+        elif "sell" in rec or "underperform" in rec:
+            mscore -= 10; negatives.append(f"アナリスト推奨：売り（{rec}）")
+
+    # 機関投資家の保有比率
+    inst = _num(info.get("heldPercentInstitutions"))
+    if inst is not None:
+        inst_pct = inst * 100
+        if inst_pct > 70:
+            mscore += 5; positives.append(f"機関投資家保有 {inst_pct:.0f}%：プロの資金が入っている")
+        elif inst_pct < 20:
+            mscore -= 3; negatives.append(f"機関投資家保有 {inst_pct:.0f}%：機関の関心が薄い（個人主導で値動き荒い可能性）")
+
+    # ベータ（変動の激しさ）
+    beta = _num(info.get("beta"))
+    if beta is not None:
+        if beta > 1.8:
+            negatives.append(f"ベータ {beta:.1f}：市場の{beta:.1f}倍動く高ボラ銘柄（下落局面で大きく下がる）")
+        elif beta < 0.7:
+            positives.append(f"ベータ {beta:.1f}：値動きが穏やかで下落耐性がある")
+
+    # 配当
+    dy = _num(info.get("dividendYield"))
+    if dy is not None and dy > 3:
+        mscore += 5; positives.append(f"配当利回り {dy:.1f}%：下値支えになりやすい")
+
+    # 財務健全性（ネットキャッシュ・FCF）
+    fin_score = 0
+    fin_notes = []
+    if bs and "error" not in bs:
+        net_cash = _num(bs.get("net_cash"))
+        fcf = _num(bs.get("free_cash_flow_ttm"))
+        if net_cash is not None:
+            if net_cash > 0:
+                fin_score += 1; fin_notes.append("実質無借金（現金＞負債）")
+            else:
+                fin_notes.append("負債が現金を上回る")
+        if fcf is not None:
+            if fcf > 0:
+                fin_score += 1; fin_notes.append("フリーキャッシュフロー黒字（自力でお金を生む）")
+            else:
+                fin_score -= 1; fin_notes.append("FCF赤字（外部資金に依存するリスク）")
+    de_ratio = None
+    if val and "error" not in val:
+        de_ratio = _num(val.get("financial_health", {}).get("debt_to_equity"))
+        cr = _num(val.get("financial_health", {}).get("current_ratio"))
+        if de_ratio is not None and de_ratio < 50:
+            fin_score += 1; fin_notes.append("負債比率が低い")
+        if cr is not None and cr > 1.5:
+            fin_score += 1
+        elif cr is not None and cr < 1.0:
+            fin_score -= 1; fin_notes.append("流動比率1未満（短期の支払い能力に注意）")
+    if fin_score >= 2:
+        mscore += 10; positives.append("財務健全性：良好（" + "・".join(fin_notes[:2]) + "）")
+    elif fin_score <= -1:
+        mscore -= 10; negatives.append("財務健全性：注意（" + "・".join(fin_notes[:2]) + "）")
+    sub["market_position"] = max(-100, min(100, mscore))
+
+    # ══════════ 言葉の判定（良い/普通/悪い） ══════════
+    def _verdict(score, good=20, bad=-20):
+        if score >= good:
+            return "良い 👍"
+        if score <= bad:
+            return "悪い 👎"
+        return "普通 ➖"
+
+    verdicts = {
+        "テクニカル": {
+            "judge": _verdict(sub.get("technical", 0)),
+            "why": "トレンド方向・RSIの過熱度・MACDの勢いから判定。『良い』=上昇の流れに乗っている、『悪い』=下落の流れの中にいる",
+        },
+        "ファンダメンタルズ": {
+            "judge": _verdict(sub.get("fundamental", 0)),
+            "why": "割安さ(PEG)・売上の伸び・稼ぐ力(ROE/利益率)から判定。『良い』=業績が伸びて値段も妥当、『悪い』=業績鈍化や割高",
+        },
+        "財務健全性": {
+            "judge": "良い 👍" if fin_score >= 2 else ("悪い 👎" if fin_score <= -1 else "普通 ➖"),
+            "why": "・".join(fin_notes) if fin_notes else "現金と負債のバランス、自力でお金を生む力(FCF)から判定",
+        },
+        "需給(空売り)": {
+            "judge": _verdict(sub.get("supply_demand", 0), good=8, bad=-8),
+            "why": "空売り残高の多さと増減から判定。『悪い』=プロが下落に賭けている、『良い』=売り圧力が軽い",
+        },
+        "市場の評価": {
+            "judge": _verdict(sub.get("market_position", 0), good=15, bad=-15),
+            "why": "アナリスト目標株価との差・機関投資家の保有・52週の位置から判定",
+        },
+    }
+
     # ══════════ 総合スコア（重み付け） ══════════
     weights = {
-        "technical": 0.30,
-        "fundamental": 0.30,
-        "supply_demand": 0.12,
-        "catalyst": 0.15,
-        "news": 0.13,
+        "technical": 0.25,
+        "fundamental": 0.25,
+        "supply_demand": 0.10,
+        "catalyst": 0.12,
+        "news": 0.10,
+        "market_position": 0.18,
     }
     raw = sum(sub.get(k, 0) * w for k, w in weights.items())  # -100〜+100
     total_score = round((raw + 100) / 2)  # 0〜100 に変換
@@ -212,6 +341,7 @@ def evaluate_stock(symbol: str) -> dict:
         "rating": rating,                 # ◎○△▲×
         "outlook_1m": outlook,
         "sub_scores": sub,                # 各観点の -100〜+100
+        "verdicts": verdicts,             # 観点ごとの 良い/普通/悪い ＋ 理由
         "positives": positives,           # 好材料
         "negatives": negatives,           # 悪材料
         "expected_range": range_info,     # 想定レンジ
