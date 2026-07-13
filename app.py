@@ -192,11 +192,20 @@ if is_portfolio_mode:
                 st.rerun()
         st.caption(f"合計 {len(holdings)} 銘柄（分析実行時に現在値・損益を円換算で算出します）")
 
-        # 即時サマリー（API不要・yfinanceのみ）
-        if st.button("💹 現在の損益をチェック（AI分析なし・無料）"):
-            with st.spinner("価格取得中..."):
+        # ── 無料ダッシュボード（API不要・yfinanceのみ） ────────────────────
+        st.divider()
+        st.subheader("📈 無料ダッシュボード")
+        st.caption("AIを使わないのでAPI残高は消費しません。データ取得のみで数十秒かかります。")
+
+        if st.button("💹 ダッシュボードを表示（無料）", type="secondary", use_container_width=True):
+            from tools.portfolio import get_portfolio_snapshot
+            from tools.market_data import get_price_history
+            from tools.technical_analysis import run_technical_analysis
+            from tools.fundamentals import get_valuation_metrics, get_earnings_calendar
+
+            # 1) 損益サマリー
+            with st.spinner("損益を計算中..."):
                 try:
-                    from tools.portfolio import get_portfolio_snapshot
                     snap = get_portfolio_snapshot(holdings)
                     s = snap["summary"]
                     m1, m2, m3, m4 = st.columns(4)
@@ -204,27 +213,120 @@ if is_portfolio_mode:
                     m2.metric("取得額合計", yen(s["total_cost_jpy"]))
                     m3.metric("評価損益", yen(s["total_pnl_jpy"]), f"{s['total_pnl_pct']:+.2f}%")
                     m4.metric("ドル円", f"{snap['usdjpy_rate']:.2f}")
-                    for r in snap["holdings"]:
-                        if "error" in r:
-                            st.warning(f"{r['symbol']}: {r['error']}")
-                        else:
-                            pnl = r["unrealized_pnl_jpy"]
-                            emoji = "🟢" if pnl >= 0 else "🔴"
-                            st.write(
-                                f"{emoji} **{r['symbol']}** ({r.get('name','')}) — "
-                                f"現在値 {r['current_price']:,.1f} {r['currency']} "
-                                f"（前日比 {r['day_change_pct']:+.2f}%）／ "
-                                f"評価損益 {yen(pnl)}（{r['unrealized_pnl_pct']:+.1f}%）／ "
-                                f"構成比 {r.get('allocation_pct', 0):.1f}%"
-                            )
                 except Exception as e:
-                    st.error(f"価格取得に失敗しました: {e}")
+                    st.error(f"損益計算に失敗しました: {e}")
+                    snap = {"holdings": []}
+
+            # 2) 各銘柄の詳細（損益・テクニカル・割安度・次回決算）
+            for r in snap["holdings"]:
+                sym = r["symbol"]
+                if "error" in r:
+                    st.warning(f"{sym}: {r['error']}")
+                    continue
+
+                pnl = r["unrealized_pnl_jpy"]
+                emoji = "🟢" if pnl >= 0 else "🔴"
+                with st.expander(
+                    f"{emoji} {sym}（{r.get('name','')}）　損益 {yen(pnl)}（{r['unrealized_pnl_pct']:+.1f}%）",
+                    expanded=False,
+                ):
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("現在値", f"{r['current_price']:,.1f} {r['currency']}", f"{r['day_change_pct']:+.2f}%")
+                    c2.metric("評価額（円）", yen(r["market_value_jpy"]))
+                    c3.metric("構成比", f"{r.get('allocation_pct', 0):.1f}%")
+                    tgt = r["analyst"].get("target_mean")
+                    ups = r["analyst"].get("upside_pct")
+                    c4.metric(
+                        "アナリスト目標",
+                        f"{tgt:,.0f}" if tgt else "—",
+                        f"{ups:+.1f}%" if ups is not None else None,
+                    )
+
+                    # テクニカル
+                    with st.spinner(f"{sym} のテクニカルを計算中..."):
+                        try:
+                            hist = get_price_history(sym, "6mo")
+                            if "data" in hist:
+                                ta = run_technical_analysis(hist["data"])
+                                if "error" not in ta:
+                                    t1, t2, t3, t4 = st.columns(4)
+                                    t1.metric("RSI(14)", ta.get("rsi14", "—"))
+                                    t2.metric("トレンド", "上昇" if ta.get("trend") == "UPTREND" else "下落")
+                                    t3.metric("サポート", f"{ta.get('support_20d', 0):,.0f}")
+                                    t4.metric("レジスタンス", f"{ta.get('resistance_20d', 0):,.0f}")
+                                    if ta.get("signals"):
+                                        for sig in ta["signals"]:
+                                            st.info(f"📶 {sig}")
+                        except Exception as e:
+                            st.caption(f"テクニカル取得エラー: {e}")
+
+                    # バリュエーション・次回決算
+                    try:
+                        val = get_valuation_metrics(sym)
+                        if "error" not in val:
+                            v = val.get("valuation", {})
+                            p = val.get("profitability", {})
+                            st.write(
+                                f"**割安度**: PER {v.get('trailing_pe') or '—'} / "
+                                f"予想PER {v.get('forward_pe') or '—'} / "
+                                f"PEG {v.get('peg_ratio') or '—'} / "
+                                f"PBR {v.get('price_to_book') or '—'} ｜ "
+                                f"**収益性**: ROE {p.get('roe_pct') or '—'}% / "
+                                f"営業利益率 {p.get('operating_margin_pct') or '—'}%"
+                            )
+                    except Exception:
+                        pass
+                    try:
+                        cal = get_earnings_calendar(sym)
+                        if "error" not in cal and cal.get("next_earnings_dates"):
+                            st.write(f"📅 **次回決算**: {cal['next_earnings_dates'][0]}"
+                                     + (f"（予想EPS {cal['eps_estimate_avg']}）" if cal.get("eps_estimate_avg") else ""))
+                    except Exception:
+                        pass
+
+            st.success("ダッシュボード表示完了（API残高は消費していません）")
     else:
         st.info("👆 上のフォームから保有銘柄を追加してください（例：トヨタなら「7203」、株数「100」、取得単価「2500」）")
 
 else:
     st.header("🌐 マーケット総合分析")
     st.caption("日米の指数・為替・セクター・金利・ニュースを網羅した機関投資家向け日次レポートを生成します")
+
+    st.divider()
+    st.subheader("📈 無料マーケットダッシュボード")
+    st.caption("AIを使わないのでAPI残高は消費しません。")
+
+    if st.button("🌐 今の相場を表示（無料）", type="secondary", use_container_width=True):
+        from tools.macro_data import get_global_macro_snapshot
+
+        with st.spinner("世界のマーケットデータを取得中...（30秒ほど）"):
+            try:
+                macro = get_global_macro_snapshot()
+
+                def render_group(title, items, price_fmt="{:,.2f}"):
+                    st.markdown(f"**{title}**")
+                    cols = st.columns(4)
+                    for i, item in enumerate(items):
+                        with cols[i % 4]:
+                            if "error" in item:
+                                st.caption(f"{item['label']}: 取得不可")
+                            else:
+                                st.metric(
+                                    item["label"],
+                                    price_fmt.format(item["price"]),
+                                    f"{item['change_1d_pct']:+.2f}%" if item.get("change_1d_pct") is not None else None,
+                                )
+
+                render_group("📊 世界の株価指数", macro.get("global_indices", []), "{:,.0f}")
+                st.divider()
+                render_group("💱 為替", macro.get("fx", []), "{:,.3f}")
+                st.divider()
+                render_group("🏦 米国債利回り (%)", macro.get("us_treasury_yields", []), "{:.2f}")
+                st.divider()
+                render_group("🛢️ コモディティ", macro.get("commodities", []), "{:,.1f}")
+                st.success("表示完了（API残高は消費していません）")
+            except Exception as e:
+                st.error(f"データ取得に失敗しました: {e}")
 
 
 # ── Run analysis ──────────────────────────────────────────────────────────────
