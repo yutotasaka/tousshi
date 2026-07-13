@@ -20,16 +20,6 @@ PORTFOLIO_FILE = Path("portfolio.json")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def get_api_key() -> str:
-    """Secrets → 環境変数 → サイドバー入力 の順で探す"""
-    try:
-        if "ANTHROPIC_API_KEY" in st.secrets:
-            return st.secrets["ANTHROPIC_API_KEY"]
-    except Exception:
-        pass
-    return os.environ.get("ANTHROPIC_API_KEY", "")
-
-
 def load_portfolio() -> list[dict]:
     try:
         if PORTFOLIO_FILE.exists():
@@ -71,61 +61,31 @@ if "holdings" not in st.session_state:
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("📊 機関投資家エージェント")
-    st.caption("Claude AI による総合マーケット分析")
-
-    api_key = get_api_key()
-    if not api_key:
-        api_key = st.text_input(
-            "Anthropic API Key",
-            type="password",
-            placeholder="sk-ant-...",
-            help="console.anthropic.com で取得したAPIキーを入力",
-        )
-    if api_key:
-        os.environ["ANTHROPIC_API_KEY"] = api_key
-        st.success("APIキー設定済み", icon="🔑")
-    else:
-        st.warning("APIキーが未設定です", icon="⚠️")
-
-    st.divider()
+    st.caption("日本株・米国株の総合マーケット分析（無料）")
 
     mode = st.radio(
-        "分析モード",
-        ["💼 ポートフォリオ分析", "🌐 マーケット分析", "🔍 銘柄検索"],
+        "メニュー",
+        ["💼 ポートフォリオ", "🌐 マーケット", "🔍 銘柄検索"],
         index=0,
-        help="ポートフォリオ分析＝保有銘柄の診断 / マーケット分析＝相場全体の総括 / 銘柄検索＝個別銘柄の全情報",
+        help="ポートフォリオ＝保有銘柄の損益・診断 / マーケット＝世界の相場状況 / 銘柄検索＝個別銘柄の全情報",
     )
 
     st.divider()
-
-    target = st.text_input(
-        "フォーカス銘柄・テーマ（任意）",
-        placeholder="例: 7203, NVDA, 半導体",
-    )
-    context = st.text_input(
-        "補足情報（任意）",
-        placeholder="例: 本日FOMC、日銀会合",
-    )
-
-    run_btn = st.button("🚀 分析開始", type="primary", use_container_width=True)
-
-    st.divider()
-    with st.expander("❓ 使い方"):
+    with st.expander("❓ 使い方", expanded=False):
         st.markdown("""
-**1. APIキーを設定**（初回のみ）
-
-**2. モードを選ぶ**
-- 💼 ポートフォリオ分析：保有株の診断・売買アドバイス
-- 🌐 マーケット分析：今日の相場総括
-
-**3. ポートフォリオ分析の場合**
-右の画面で保有銘柄を登録：
+**💼 ポートフォリオ**
+保有銘柄を登録して損益・テクニカル・決算をまとめてチェック
 - 日本株 → 証券コード4桁（例: `7203`）
 - 米国株 → ティッカー（例: `AAPL`）
-- 株数と、1株あたりの買値（日本株は円、米国株はドル）
+- 金額は日本株＝円、米国株＝ドル
 
-**4. 「🚀 分析開始」を押す**
-1〜3分でレポートが生成されます
+**🌐 マーケット**
+世界の株価指数・為替・金利・コモディティを一覧表示
+
+**🔍 銘柄検索**
+気になる銘柄のコードを入れると、価格チャート・テクニカル・割安度・決算・財務を表示
+
+すべて無料で利用できます。
 """)
 
 
@@ -233,12 +193,12 @@ if is_portfolio_mode:
                 st.rerun()
         st.caption(f"合計 {len(holdings)} 銘柄（分析実行時に現在値・損益を円換算で算出します）")
 
-        # ── 無料ダッシュボード（API不要・yfinanceのみ） ────────────────────
+        # ── ダッシュボード ────────────────────────────────────────────────
         st.divider()
-        st.subheader("📈 無料ダッシュボード")
-        st.caption("AIを使わないのでAPI残高は消費しません。データ取得のみで数十秒かかります。")
+        st.subheader("📈 ダッシュボード")
+        st.caption("データ取得に数十秒かかります。")
 
-        if st.button("💹 ダッシュボードを表示（無料）", type="secondary", use_container_width=True):
+        if st.button("💹 ダッシュボードを表示", type="primary", use_container_width=True):
             from tools.portfolio import get_portfolio_snapshot
             from tools.market_data import get_price_history
             from tools.technical_analysis import run_technical_analysis
@@ -325,13 +285,13 @@ if is_portfolio_mode:
                     except Exception:
                         pass
 
-            st.success("ダッシュボード表示完了（API残高は消費していません）")
+            st.success("ダッシュボード表示完了")
     else:
         st.info("👆 上のフォームから保有銘柄を追加してください（例：トヨタなら「7203」、株数「100」、取得単価「2500」）")
 
 elif is_search_mode:
     st.header("🔍 銘柄検索")
-    st.caption("証券コード（例: 7203）またはティッカー（例: NVDA）を入力すると、価格・テクニカル・割安度・決算・財務・アナリスト評価をまとめて表示します（無料・API残高消費なし）")
+    st.caption("証券コード（例: 7203）またはティッカー（例: NVDA）を入力すると、価格・テクニカル・割安度・決算・財務・アナリスト評価をまとめて表示します")
 
     sc1, sc2 = st.columns([3, 1])
     with sc1:
@@ -478,18 +438,13 @@ elif is_search_mode:
             except Exception:
                 pass
 
-            st.success("表示完了（API残高は消費していません）")
-            st.info("💡 この銘柄をAIで深掘り分析したい場合は、サイドバーの「フォーカス銘柄」にこのコードを入れて「🚀 分析開始」を押してください（API残高を消費します）")
+            st.success("表示完了")
 
 else:
-    st.header("🌐 マーケット総合分析")
-    st.caption("日米の指数・為替・セクター・金利・ニュースを網羅した機関投資家向け日次レポートを生成します")
+    st.header("🌐 マーケットダッシュボード")
+    st.caption("世界の株価指数・為替・米国債利回り・コモディティを一覧表示します")
 
-    st.divider()
-    st.subheader("📈 無料マーケットダッシュボード")
-    st.caption("AIを使わないのでAPI残高は消費しません。")
-
-    if st.button("🌐 今の相場を表示（無料）", type="secondary", use_container_width=True):
+    if st.button("🌐 今の相場を表示", type="primary", use_container_width=True):
         from tools.macro_data import get_global_macro_snapshot
 
         with st.spinner("世界のマーケットデータを取得中...（30秒ほど）"):
@@ -517,71 +472,7 @@ else:
                 render_group("🏦 米国債利回り (%)", macro.get("us_treasury_yields", []), "{:.2f}")
                 st.divider()
                 render_group("🛢️ コモディティ", macro.get("commodities", []), "{:,.1f}")
-                st.success("表示完了（API残高は消費していません）")
+                st.success("表示完了")
             except Exception as e:
                 st.error(f"データ取得に失敗しました: {e}")
 
-
-# ── Run analysis ──────────────────────────────────────────────────────────────
-if run_btn:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        st.error("サイドバーにAnthropicのAPIキーを入力してください")
-        st.stop()
-
-    holdings = st.session_state.holdings if is_portfolio_mode else []
-    if is_portfolio_mode and not holdings:
-        st.error("ポートフォリオに銘柄を追加してから分析を実行してください")
-        st.stop()
-
-    st.divider()
-    st.subheader("📋 分析レポート")
-    output_area = st.empty()
-    full_text = ""
-
-    status = st.status("分析中...（1〜3分かかります）", expanded=True)
-
-    try:
-        from agent import stream_analysis
-
-        for event in stream_analysis(
-            mode="portfolio" if is_portfolio_mode else "market",
-            holdings=holdings if is_portfolio_mode else None,
-            target=target,
-            extra_context=context,
-        ):
-            if event["type"] == "thinking":
-                status.write("💭 思考中...")
-            elif event["type"] == "tool_start":
-                status.write(f"🔧 {event['name']} を実行中...")
-            elif event["type"] == "tool_result":
-                status.write(f"✅ {event['name']} 完了")
-            elif event["type"] == "text":
-                full_text += event["content"]
-                output_area.markdown(full_text)
-            elif event["type"] == "done":
-                status.update(label="✅ 分析完了", state="complete", expanded=False)
-                output_area.markdown(full_text)
-            elif event["type"] == "error":
-                status.update(label="❌ エラー", state="error")
-                msg = event["content"]
-                if "authentication" in msg.lower() or "401" in msg:
-                    st.error("APIキーが無効です。console.anthropic.com でキーを確認してください。")
-                elif "credit" in msg.lower() or "billing" in msg.lower():
-                    st.error("Anthropicアカウントの残高が不足しています。console.anthropic.com の Billing でチャージしてください。")
-                elif "overloaded" in msg.lower() or "529" in msg:
-                    st.error("AIサーバーが混雑しています。少し待ってから再実行してください。")
-                else:
-                    st.error(f"エラーが発生しました: {msg}")
-    except Exception as e:
-        status.update(label="❌ エラー", state="error")
-        st.error(f"予期しないエラー: {e}")
-
-    if full_text:
-        st.divider()
-        date_str = datetime.now().strftime("%Y%m%d_%H%M")
-        st.download_button(
-            label="📥 レポートをダウンロード",
-            data=full_text,
-            file_name=f"report_{date_str}.md",
-            mime="text/markdown",
-        )
