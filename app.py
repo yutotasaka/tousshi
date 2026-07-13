@@ -91,9 +91,9 @@ with st.sidebar:
 
     mode = st.radio(
         "分析モード",
-        ["💼 ポートフォリオ分析", "🌐 マーケット分析"],
+        ["💼 ポートフォリオ分析", "🌐 マーケット分析", "🔍 銘柄検索"],
         index=0,
-        help="ポートフォリオ分析＝保有銘柄の診断 / マーケット分析＝相場全体の総括",
+        help="ポートフォリオ分析＝保有銘柄の診断 / マーケット分析＝相場全体の総括 / 銘柄検索＝個別銘柄の全情報",
     )
 
     st.divider()
@@ -130,6 +130,7 @@ with st.sidebar:
 
 
 is_portfolio_mode = "ポートフォリオ" in mode
+is_search_mode = "銘柄検索" in mode
 
 
 # ── Portfolio manager ─────────────────────────────────────────────────────────
@@ -327,6 +328,158 @@ if is_portfolio_mode:
             st.success("ダッシュボード表示完了（API残高は消費していません）")
     else:
         st.info("👆 上のフォームから保有銘柄を追加してください（例：トヨタなら「7203」、株数「100」、取得単価「2500」）")
+
+elif is_search_mode:
+    st.header("🔍 銘柄検索")
+    st.caption("証券コード（例: 7203）またはティッカー（例: NVDA）を入力すると、価格・テクニカル・割安度・決算・財務・アナリスト評価をまとめて表示します（無料・API残高消費なし）")
+
+    sc1, sc2 = st.columns([3, 1])
+    with sc1:
+        search_sym_raw = st.text_input("証券コード / ティッカー", placeholder="7203 または NVDA", label_visibility="collapsed")
+    with sc2:
+        search_btn = st.button("🔍 検索", type="primary", use_container_width=True)
+
+    if search_btn and search_sym_raw.strip():
+        sym = normalize_input_symbol(search_sym_raw)
+        from tools.market_data import get_price_history
+        from tools.technical_analysis import run_technical_analysis
+        from tools.fundamentals import (
+            get_valuation_metrics,
+            get_earnings_calendar,
+            get_earnings_history,
+            get_balance_sheet_summary,
+        )
+        from tools.portfolio import get_usdjpy_rate
+
+        with st.spinner(f"{sym} の情報を取得中...（20秒ほど）"):
+            # ── 基本情報・現在値 ──
+            val = {}
+            try:
+                val = get_valuation_metrics(sym)
+            except Exception as e:
+                val = {"error": str(e)}
+
+            hist = get_price_history(sym, "6mo")
+
+            if "error" in hist and "error" in val:
+                st.error(f"「{sym}」のデータが見つかりません。コードを確認してください（日本株は4桁数字、米国株はアルファベット）。")
+                st.stop()
+
+            name = val.get("name") or sym
+            is_jp = sym.endswith(".T")
+            cur_label = "円" if is_jp else "ドル"
+            st.subheader(f"{'🇯🇵' if is_jp else '🇺🇸'} {name}（{sym}）")
+            if val.get("sector"):
+                st.caption(f"セクター: {val.get('sector')} ｜ 時価総額: {val['market_cap']:,} " + ("円" if is_jp else "ドル") if val.get("market_cap") else f"セクター: {val.get('sector')}")
+
+            # ── 価格・テクニカル ──
+            ta = {}
+            if "data" in hist and hist["data"]:
+                last_bar = hist["data"][-1]
+                prev_bar = hist["data"][-2] if len(hist["data"]) >= 2 else last_bar
+                chg = (last_bar["close"] - prev_bar["close"]) / prev_bar["close"] * 100 if prev_bar["close"] else 0
+                p1, p2, p3, p4 = st.columns(4)
+                p1.metric("現在値", f"{last_bar['close']:,.1f} {cur_label}", f"{chg:+.2f}%")
+                if not is_jp:
+                    usdjpy = get_usdjpy_rate()
+                    p2.metric("円換算", f"¥{last_bar['close'] * usdjpy:,.0f}", f"ドル円 {usdjpy:.2f}")
+                try:
+                    ta = run_technical_analysis(hist["data"])
+                except Exception:
+                    ta = {}
+                if ta and "error" not in ta:
+                    p3.metric("RSI(14)", ta.get("rsi14", "—"))
+                    p4.metric("トレンド", "📈 上昇" if ta.get("trend") == "UPTREND" else "📉 下落")
+
+                # 価格チャート
+                import pandas as pd
+                df = pd.DataFrame(hist["data"])
+                df["date"] = pd.to_datetime(df["date"])
+                st.line_chart(df.set_index("date")["close"], height=250)
+
+            # ── テクニカル詳細 ──
+            if ta and "error" not in ta:
+                st.markdown("#### 📈 テクニカル")
+                t1, t2, t3, t4 = st.columns(4)
+                t1.metric("サポート(20日)", f"{ta.get('support_20d', 0):,.0f}")
+                t2.metric("レジスタンス(20日)", f"{ta.get('resistance_20d', 0):,.0f}")
+                ma = ta.get("moving_averages", {})
+                t3.metric("20日EMA", f"{ma.get('ema20', 0):,.0f}" if ma.get("ema20") else "—")
+                t4.metric("50日EMA", f"{ma.get('ema50', 0):,.0f}" if ma.get("ema50") else "—")
+                for sig in ta.get("signals", []):
+                    st.info(f"📶 {sig}")
+
+            # ── バリュエーション・収益性 ──
+            if val and "error" not in val:
+                st.markdown("#### 📑 バリュエーション・収益性")
+                v = val.get("valuation", {})
+                p = val.get("profitability", {})
+                g = val.get("growth", {})
+                fh = val.get("financial_health", {})
+                dv = val.get("dividend", {})
+                b1, b2, b3, b4, b5 = st.columns(5)
+                b1.metric("PER(実績)", v.get("trailing_pe") or "—")
+                b2.metric("PER(予想)", v.get("forward_pe") or "—")
+                b3.metric("PEG", v.get("peg_ratio") or "—")
+                b4.metric("PBR", v.get("price_to_book") or "—")
+                b5.metric("EV/EBITDA", v.get("ev_to_ebitda") or "—")
+                c1_, c2_, c3_, c4_, c5_ = st.columns(5)
+                c1_.metric("ROE", f"{p.get('roe_pct')}%" if p.get("roe_pct") is not None else "—")
+                c2_.metric("営業利益率", f"{p.get('operating_margin_pct')}%" if p.get("operating_margin_pct") is not None else "—")
+                c3_.metric("売上成長(YoY)", f"{g.get('revenue_growth_yoy_pct')}%" if g.get("revenue_growth_yoy_pct") is not None else "—")
+                c4_.metric("配当利回り", f"{dv.get('dividend_yield_pct')}%" if dv.get("dividend_yield_pct") is not None else "—")
+                c5_.metric("D/Eレシオ", fh.get("debt_to_equity") or "—")
+
+            # ── 決算 ──
+            st.markdown("#### 📅 決算")
+            try:
+                cal = get_earnings_calendar(sym)
+                if "error" not in cal:
+                    if cal.get("next_earnings_dates"):
+                        est = f"（予想EPS {cal['eps_estimate_avg']}）" if cal.get("eps_estimate_avg") else ""
+                        st.write(f"**次回決算予定**: {cal['next_earnings_dates'][0]} {est}")
+                    if cal.get("past_surprises"):
+                        st.write("**過去のEPSサプライズ**（予想 vs 実績）:")
+                        for sp in reversed(cal["past_surprises"]):
+                            if sp.get("surprise_pct") is not None:
+                                mark = "✅ 上回り" if sp["surprise_pct"] >= 0 else "❌ 下回り"
+                                st.write(f"- {sp['quarter']}: 予想 {sp.get('eps_estimate','—')} → 実績 {sp.get('eps_actual','—')}（{sp['surprise_pct']:+.1f}% {mark}）")
+            except Exception:
+                st.caption("決算カレンダーを取得できませんでした")
+
+            try:
+                eh = get_earnings_history(sym)
+                if "error" not in eh and eh.get("quarterly"):
+                    st.write("**四半期業績**（直近4四半期）:")
+                    import pandas as pd
+                    rows = []
+                    for q_ in eh["quarterly"][:4]:
+                        rows.append({
+                            "四半期": q_["quarter_end"],
+                            "売上": f"{q_['revenue']:,.0f}" if q_.get("revenue") else "—",
+                            "売上YoY": f"{q_['revenue_yoy_pct']:+.1f}%" if q_.get("revenue_yoy_pct") is not None else "—",
+                            "純利益": f"{q_['net_income']:,.0f}" if q_.get("net_income") else "—",
+                            "EPS": q_.get("diluted_eps", "—"),
+                        })
+                    st.table(pd.DataFrame(rows))
+            except Exception:
+                pass
+
+            # ── 財務 ──
+            try:
+                bs = get_balance_sheet_summary(sym)
+                if "error" not in bs:
+                    st.markdown("#### 🏦 財務健全性")
+                    f1, f2, f3, f4 = st.columns(4)
+                    f1.metric("現金等", f"{bs['cash_and_equivalents']:,.0f}" if bs.get("cash_and_equivalents") else "—")
+                    f2.metric("総負債", f"{bs['total_debt']:,.0f}" if bs.get("total_debt") else "—")
+                    f3.metric("ネットキャッシュ", f"{bs['net_cash']:,.0f}" if bs.get("net_cash") is not None else "—")
+                    f4.metric("FCF(直近12ヶ月)", f"{bs['free_cash_flow_ttm']:,.0f}" if bs.get("free_cash_flow_ttm") else "—")
+            except Exception:
+                pass
+
+            st.success("表示完了（API残高は消費していません）")
+            st.info("💡 この銘柄をAIで深掘り分析したい場合は、サイドバーの「フォーカス銘柄」にこのコードを入れて「🚀 分析開始」を押してください（API残高を消費します）")
 
 else:
     st.header("🌐 マーケット総合分析")
