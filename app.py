@@ -53,6 +53,17 @@ def yen(v) -> str:
         return "—"
 
 
+def fmt_shares(v) -> str:
+    """端株（小数）を見やすく表示。0.5 → '0.5', 3.0 → '3', 1.2345 → '1.2345'"""
+    try:
+        f = float(v)
+        if f == int(f):
+            return f"{int(f):,}"
+        return f"{f:,.4f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return "—"
+
+
 # ── Session state for portfolio (survives reruns even if file write fails) ───
 if "holdings" not in st.session_state:
     st.session_state.holdings = load_portfolio()
@@ -101,11 +112,15 @@ if is_portfolio_mode:
     holdings = st.session_state.holdings
 
     with st.expander("➕ 銘柄を追加・変更", expanded=len(holdings) == 0):
+        st.caption("💡 PayPay証券など端株（0.5株など小数）もそのまま入力できます。")
         input_mode = st.radio(
             "入力方法",
-            ["株数で入力", "投資金額で入力（株数を自動計算）"],
+            ["保有数量＋取得単価（PayPay向け）", "投資金額から自動計算"],
             horizontal=True,
-            help="投資金額モード：投資した合計金額と取得単価から株数を自動計算します。取得単価を空欄(0)にすると現在の株価で計算します。",
+            help=(
+                "・保有数量＋取得単価：PayPay証券アプリの「保有数量」と「平均取得単価」をそのまま入力（小数OK）\n"
+                "・投資金額から自動計算：いくら分買ったか（円/ドル）を入れると株数を自動計算"
+            ),
         )
         by_amount = "金額" in input_mode
 
@@ -117,16 +132,22 @@ if is_portfolio_mode:
                 if by_amount:
                     new_amount = st.number_input(
                         "投資金額（日本株:円 / 米国株:ドル）",
-                        min_value=0.0, step=10000.0, value=0.0,
+                        min_value=0.0, step=1000.0, value=0.0,
+                        help="PayPayで「1000円分買った」なら 1000 と入力",
                     )
                     new_shares = 0.0
                 else:
-                    new_shares = st.number_input("株数", min_value=0.0, step=100.0, value=0.0)
+                    new_shares = st.number_input(
+                        "保有数量（株）",
+                        min_value=0.0, step=0.1, value=0.0, format="%.4f",
+                        help="0.5 など小数もOK。PayPayアプリの「保有数量」をそのまま入力",
+                    )
                     new_amount = 0.0
             with col3:
                 new_cost = st.number_input(
-                    "取得単価（日本株:円 / 米国株:ドル）" + ("　※空欄(0)=現在値で計算" if by_amount else ""),
-                    min_value=0.0, step=1.0, value=0.0,
+                    "取得単価（日本株:円 / 米国株:ドル）" + ("　※0=現在値で計算" if by_amount else ""),
+                    min_value=0.0, step=0.01, value=0.0, format="%.2f",
+                    help="PayPayアプリの「平均取得単価」をそのまま入力",
                 )
             add_btn = st.form_submit_button("追加 / 更新", use_container_width=True)
 
@@ -138,7 +159,7 @@ if is_portfolio_mode:
             elif by_amount and new_amount <= 0:
                 err = "投資金額を入力してください"
             elif not by_amount and new_shares <= 0:
-                err = "株数を入力してください"
+                err = "保有数量を入力してください"
             elif not by_amount and new_cost <= 0:
                 err = "取得単価を入力してください"
 
@@ -160,18 +181,17 @@ if is_portfolio_mode:
                     if cost <= 0:
                         st.error(f"{sym} の株価を取得できませんでした。取得単価を手入力してください。")
                         st.stop()
-                    new_shares = round(new_amount / cost, 2)
-                    # 日本株は通常100株単位なので端数は情報表示のみ
-                    st.info(f"計算結果: {new_amount:,.0f} ÷ 単価 {cost:,.2f} = **{new_shares:,.2f} 株** として登録します")
+                    new_shares = round(new_amount / cost, 6)
+                    st.info(f"計算結果: {new_amount:,.0f} ÷ 単価 {cost:,.2f} = **{fmt_shares(new_shares)} 株** として登録します")
 
                 existing = next((h for h in holdings if h["symbol"] == sym), None)
                 if existing:
                     existing["shares"] = new_shares
                     existing["avg_cost"] = round(cost, 4)
-                    st.success(f"{sym} を更新しました（{new_shares:,.2f}株 @ {cost:,.2f}）")
+                    st.success(f"{sym} を更新しました（{fmt_shares(new_shares)}株 @ {cost:,.2f}）")
                 else:
                     holdings.append({"symbol": sym, "shares": new_shares, "avg_cost": round(cost, 4)})
-                    st.success(f"{sym} を追加しました（{new_shares:,.2f}株 @ {cost:,.2f}）")
+                    st.success(f"{sym} を追加しました（{fmt_shares(new_shares)}株 @ {cost:,.2f}）")
                 save_portfolio(holdings)
 
     if holdings:
@@ -185,8 +205,8 @@ if is_portfolio_mode:
             unit = "円" if is_jp else "ドル"
             cols = st.columns([2, 1.5, 2, 1])
             cols[0].write(f"**{h['symbol']}** {'🇯🇵' if is_jp else '🇺🇸'}")
-            cols[1].write(f"{h['shares']:,.0f} 株")
-            cols[2].write(f"{h['avg_cost']:,.1f} {unit}")
+            cols[1].write(f"{fmt_shares(h['shares'])} 株")
+            cols[2].write(f"{h['avg_cost']:,.2f} {unit}")
             if cols[3].button("削除", key=f"del_{i}"):
                 holdings.pop(i)
                 save_portfolio(holdings)
@@ -287,7 +307,7 @@ if is_portfolio_mode:
 
             st.success("ダッシュボード表示完了")
     else:
-        st.info("👆 上のフォームから保有銘柄を追加してください（例：トヨタなら「7203」、株数「100」、取得単価「2500」）")
+        st.info("👆 上のフォームから保有銘柄を追加してください（例：PayPay証券でNVDAを0.5株、平均取得単価180ドルなら → コード「NVDA」保有数量「0.5」取得単価「180」）")
 
 elif is_search_mode:
     st.header("🔍 銘柄検索")
