@@ -149,6 +149,15 @@ if is_portfolio_mode:
                     min_value=0.0, step=0.01, value=0.0, format="%.2f",
                     help="PayPayアプリの「平均取得単価」をそのまま入力",
                 )
+            new_fx = st.number_input(
+                "取得為替レート（米国株のみ・任意）",
+                min_value=0.0, step=0.01, value=0.0, format="%.2f",
+                help=(
+                    "米国株で、PayPay証券の損益に近づけたい場合に入力。"
+                    "PayPayアプリの「取得為替レート」（例: 162.78）をそのまま入力すると、"
+                    "取得金額の円換算がPayPayと一致します。空欄(0)なら現在レートで計算。"
+                ),
+            )
             add_btn = st.form_submit_button("追加 / 更新", use_container_width=True)
 
         if add_btn:
@@ -184,13 +193,24 @@ if is_portfolio_mode:
                     new_shares = round(new_amount / cost, 6)
                     st.info(f"計算結果: {new_amount:,.0f} ÷ 単価 {cost:,.2f} = **{fmt_shares(new_shares)} 株** として登録します")
 
+                # 取得為替レート（米国株のみ有効）
+                is_us = not sym.endswith(".T")
+                fx_at_cost = new_fx if (is_us and new_fx > 0) else None
+
                 existing = next((h for h in holdings if h["symbol"] == sym), None)
                 if existing:
                     existing["shares"] = new_shares
                     existing["avg_cost"] = round(cost, 4)
+                    if fx_at_cost:
+                        existing["fx_at_cost"] = round(fx_at_cost, 4)
+                    else:
+                        existing.pop("fx_at_cost", None)
                     st.success(f"{sym} を更新しました（{fmt_shares(new_shares)}株 @ {cost:,.2f}）")
                 else:
-                    holdings.append({"symbol": sym, "shares": new_shares, "avg_cost": round(cost, 4)})
+                    new_h = {"symbol": sym, "shares": new_shares, "avg_cost": round(cost, 4)}
+                    if fx_at_cost:
+                        new_h["fx_at_cost"] = round(fx_at_cost, 4)
+                    holdings.append(new_h)
                     st.success(f"{sym} を追加しました（{fmt_shares(new_shares)}株 @ {cost:,.2f}）")
                 save_portfolio(holdings)
 
@@ -206,7 +226,8 @@ if is_portfolio_mode:
             cols = st.columns([2, 1.5, 2, 1])
             cols[0].write(f"**{h['symbol']}** {'🇯🇵' if is_jp else '🇺🇸'}")
             cols[1].write(f"{fmt_shares(h['shares'])} 株")
-            cols[2].write(f"{h['avg_cost']:,.2f} {unit}")
+            fx_note = f"（取得為替 {h['fx_at_cost']:.2f}）" if h.get("fx_at_cost") else ""
+            cols[2].write(f"{h['avg_cost']:,.2f} {unit}{fx_note}")
             if cols[3].button("削除", key=f"del_{i}"):
                 holdings.pop(i)
                 save_portfolio(holdings)

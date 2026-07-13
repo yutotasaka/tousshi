@@ -85,12 +85,22 @@ def get_portfolio_snapshot(holdings: list[dict]) -> dict:
             currency = _detect_currency(info, sym)
             fx = usdjpy if currency == "USD" else 1.0
 
+            # 取得時の為替レート（PayPay証券などの「取得為替レート」）が指定されていれば
+            # 取得金額の円換算に使う。未指定なら現在レートを使う。
+            cost_fx = fx
+            if currency == "USD":
+                try:
+                    if h.get("fx_at_cost"):
+                        cost_fx = float(h["fx_at_cost"])
+                except (TypeError, ValueError):
+                    cost_fx = fx
+
             cost_basis = avg_cost * shares
             market_value = current_price * shares
             unrealized_pnl = market_value - cost_basis
             unrealized_pnl_pct = (unrealized_pnl / cost_basis * 100) if cost_basis else 0.0
 
-            cost_basis_jpy = cost_basis * fx
+            cost_basis_jpy = cost_basis * cost_fx
             market_value_jpy = market_value * fx
             total_value_jpy += market_value_jpy
             total_cost_jpy += cost_basis_jpy
