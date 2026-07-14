@@ -25,6 +25,50 @@ def _num(v):
 
 
 # ────────────────────────────────────────────────────────────────────
+# 業種別の標準PER目安（yfinanceのsector名がキー）
+# 業種によって「安い」の基準は大きく異なるため、絶対値と併用して判定する。
+# ────────────────────────────────────────────────────────────────────
+SECTOR_PER_BENCHMARK = {
+    "Technology": 25.0,
+    "Communication Services": 18.0,
+    "Consumer Cyclical": 18.0,
+    "Consumer Defensive": 20.0,
+    "Healthcare": 20.0,
+    "Industrials": 17.0,
+    "Financial Services": 11.0,
+    "Energy": 10.0,
+    "Utilities": 15.0,
+    "Basic Materials": 12.0,
+    "Real Estate": 15.0,
+}
+
+SECTOR_JP = {
+    "Technology": "テクノロジー",
+    "Communication Services": "通信",
+    "Consumer Cyclical": "一般消費財",
+    "Consumer Defensive": "生活必需品",
+    "Healthcare": "ヘルスケア",
+    "Industrials": "資本財・工業",
+    "Financial Services": "金融",
+    "Energy": "エネルギー",
+    "Utilities": "公益",
+    "Basic Materials": "素材",
+    "Real Estate": "不動産",
+}
+
+
+def sector_per_context(info: dict) -> dict:
+    """銘柄の業種と、その業種の標準PER目安を返す。"""
+    sector = info.get("sector")
+    bench = SECTOR_PER_BENCHMARK.get(sector)
+    return {
+        "sector": sector,
+        "sector_jp": SECTOR_JP.get(sector, sector or "不明"),
+        "benchmark_per": bench,
+    }
+
+
+# ────────────────────────────────────────────────────────────────────
 # 配当の増配ストリーク（配当履歴は長期間取れる）
 # ────────────────────────────────────────────────────────────────────
 def dividend_streak(ticker) -> dict:
@@ -143,11 +187,26 @@ def check_criteria(
             "note": note,
         })
 
-    # 1. PER
+    # 1. PER（絶対値）
     per = _num(info.get("trailingPE"))
-    add("PER（株価収益率）", per is not None and per <= max_per if per is not None else None,
+    add("PER（絶対値）", per is not None and per <= max_per if per is not None else None,
         f"{per:.1f}倍" if per is not None else "取得不可", f"{max_per:.0f}倍以下",
-        "利益に対して株価が安いか")
+        "利益に対して株価が安いか（業種を問わない絶対基準）")
+
+    # 1b. PER（業種相対）— 業種によって「安い」の基準は違う
+    sec = sector_per_context(info)
+    bench = sec.get("benchmark_per")
+    if per is not None and bench:
+        rel = per / bench
+        rel_pass = rel <= 0.8  # 業種標準の8割以下なら業種内で割安
+        add(f"PER（業種相対：{sec['sector_jp']}）", rel_pass,
+            f"{per:.1f}倍（業種標準 {bench:.0f}倍の{rel*100:.0f}%）",
+            f"業種標準の80%以下",
+            f"{sec['sector_jp']}セクターの標準と比べて安いか")
+    else:
+        add("PER（業種相対）", None,
+            "業種情報なし" if per is not None else "取得不可", "業種標準の80%以下",
+            "業種によってPERの適正水準は異なる")
 
     # 2. 配当利回り
     dy = _num(info.get("dividendYield"))
@@ -298,6 +357,23 @@ def timing_judgment(symbol: str) -> dict:
             factors.append(f"PERは過去平均({avg_per}倍)並み → 妥当な水準")
     else:
         factors.append("過去平均PERを計算できず（赤字またはデータ不足）→ テクニカル中心で判定")
+
+    # ── 業種相対PER ──
+    sec = sector_per_context(info)
+    result["sector_jp"] = sec.get("sector_jp")
+    bench = sec.get("benchmark_per")
+    if cur_per and bench:
+        rel = cur_per / bench
+        result["sector_benchmark_per"] = bench
+        result["sector_relative_pct"] = round((rel - 1) * 100, 1)
+        if rel <= 0.7:
+            score += 1
+            factors.append(f"業種相対でも割安：{sec['sector_jp']}の標準PER {bench:.0f}倍に対し{cur_per:.1f}倍（{rel*100:.0f}%）")
+        elif rel >= 1.4:
+            score -= 1
+            factors.append(f"業種相対で割高：{sec['sector_jp']}の標準PER {bench:.0f}倍に対し{cur_per:.1f}倍（{rel*100:.0f}%）")
+        else:
+            factors.append(f"業種内では標準的なPER水準（{sec['sector_jp']}標準 {bench:.0f}倍 vs {cur_per:.1f}倍）")
 
     # ── テクニカル ──
     hist = get_price_history(symbol, "6mo")

@@ -221,6 +221,13 @@ def render_timing(sym: str):
         fair = tj.get("fair_price")
         if cur and fair:
             st.caption(f"現在値 {cur:,.1f} ／ 適正株価の目安（平均PER×EPS）: {fair:,.1f}")
+    if tj.get("sector_benchmark_per"):
+        rel = tj.get("sector_relative_pct")
+        st.caption(
+            f"🏭 業種比較：{tj.get('sector_jp','—')}セクターの標準PER {tj['sector_benchmark_per']:.0f}倍に対して "
+            + (f"{rel:+.0f}%" if rel is not None else "—")
+            + "（業種によって適正PERは異なります）"
+        )
 
     # 判定理由
     st.markdown("**判定理由：**")
