@@ -364,6 +364,65 @@ elif is_screening_mode:
                         save_watchlist(wl)
                         st.success("追加しました")
 
+    # ── ✨ 注目銘柄ピックアップ ──────────────────────────────────────────
+    st.divider()
+    st.subheader("✨ 注目銘柄ピックアップ")
+    st.caption("日米の主要銘柄を、上の選定基準＋売買タイミング判定で自動スキャンして、今注目の銘柄をランキングします。（15〜20銘柄で1〜2分かかります）")
+
+    from tools.picks import UNIVERSES
+    universe_name = st.selectbox("スキャンする銘柄群", list(UNIVERSES.keys()))
+    st.caption(f"対象: {len(UNIVERSES[universe_name])}銘柄 — " + ", ".join(UNIVERSES[universe_name][:8]) + " ...")
+
+    if st.button("✨ 注目銘柄をスキャン", type="primary", use_container_width=True):
+        from tools.picks import scan_universe
+
+        prog = st.progress(0, text="スキャン準備中...")
+
+        def _cb(i, total, sym):
+            prog.progress(i / total, text=f"診断中... {sym}（{i+1}/{total}）")
+
+        results = scan_universe(
+            universe_name,
+            max_per=max_per, min_dividend_yield=min_yield,
+            min_roe=min_roe, min_dividend_streak=int(min_streak),
+            max_de_ratio=max_de, min_op_margin=min_opm,
+            progress_callback=_cb,
+        )
+        prog.progress(1.0, text="完了")
+
+        ok_results = [r for r in results if "error" not in r]
+        if not ok_results:
+            st.error("データを取得できませんでした。時間をおいて再実行してください。")
+        else:
+            st.markdown("### 🏆 注目銘柄ランキング")
+            for rank, r in enumerate(ok_results[:10], 1):
+                medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"{rank}位")
+                dev = f"　PER乖離 {r['deviation_pct']:+.0f}%" if r.get("deviation_pct") is not None else ""
+                with st.expander(
+                    f"{medal} {r['symbol']}（{r.get('name','')}）　総合 {r['combined_score']}点　"
+                    f"基準 {r['passed']}/{r['total']}　{r['verdict']}{dev}",
+                    expanded=rank <= 3,
+                ):
+                    if r.get("current_per") and r.get("avg_per"):
+                        st.caption(f"現在PER {r['current_per']}倍 / 過去平均 {r['avg_per']}倍")
+                    st.markdown("**基準チェック：**")
+                    line = "　".join(
+                        ("✅" if c["pass"] is True else "❌" if c["pass"] is False else "❔") + c["name"].split("（")[0]
+                        for c in r["checks"]
+                    )
+                    st.markdown(line)
+                    if r.get("factors"):
+                        st.markdown("**売買タイミングの根拠：**")
+                        for f in r["factors"][:4]:
+                            st.markdown(f"- {f}")
+                    if st.button(f"⭐ ウォッチリストに追加", key=f"pick_{r['symbol']}"):
+                        wl = st.session_state.watchlist
+                        if r["symbol"] not in wl:
+                            wl.append(r["symbol"])
+                            save_watchlist(wl)
+                            st.success("追加しました")
+            st.caption("※ スコア = 選定基準クリア率60% + 売買タイミング40%。機械的な参考情報であり、推奨ではありません。")
+
 elif is_search_mode:
     st.header("🔍 銘柄検索")
     st.caption("証券コード（例: 7203）またはティッカー（例: NVDA）を入力すると、価格・テクニカル・割安度・決算・財務・アナリスト評価をまとめて表示します")
