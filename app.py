@@ -381,21 +381,81 @@ elif is_screening_mode:
     CUSTOM_UNIVERSE_FILE = Path("custom_universe.json")
 
     def load_custom_universe() -> list[str]:
+        # セッション（メモリ）優先 → ファイルの順で読む（クラウドはファイルが消えることがあるため）
+        if st.session_state.get("custom_universe"):
+            return st.session_state.custom_universe
         try:
             if CUSTOM_UNIVERSE_FILE.exists():
                 data = json.loads(CUSTOM_UNIVERSE_FILE.read_text())
-                if isinstance(data, list):
+                if isinstance(data, list) and data:
+                    st.session_state.custom_universe = data
                     return data
         except Exception:
             pass
         return []
 
+    # ── カスタムリスト登録（プルダウンより先に処理して即反映させる） ──
+    with st.expander("📋 カスタムリスト（PayPay公式の銘柄コードを貼り付けて保存）",
+                     expanded=not bool(load_custom_universe())):
+        st.caption("PayPay証券アプリ/サイトの取扱銘柄一覧から銘柄コードをコピーして貼り付けてください。"
+                   "カンマ・スペース・改行区切りOK。日本株は4桁の数字（例: 7203）、米国株は英字ティッカー（例: AAPL）。"
+                   "社名（トヨタ等）は無視されるので、必ずコード/ティッカーを貼ってください。")
+        paste = st.text_area("銘柄コードを貼り付け", placeholder="7203, 8058, 9433\nAAPL MSFT NVDA ...", height=100)
+        if st.button("💾 カスタムリストとして保存"):
+            if not paste.strip():
+                st.error("貼り付け欄が空です")
+            else:
+                import re
+                tokens = re.split(r"[,、\s\n\t]+", paste.strip())
+                syms, ignored = [], []
+                for tk in tokens:
+                    tk = tk.strip().upper().replace("．", ".")
+                    if not tk:
+                        continue
+                    # 有効なパターンのみ受け付ける
+                    if re.fullmatch(r"\d{4}", tk):
+                        syms.append(f"{tk}.T")
+                    elif re.fullmatch(r"\d{4}\.T", tk):
+                        syms.append(tk)
+                    elif re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,7}", tk):
+                        syms.append(tk)
+                    else:
+                        ignored.append(tk)
+                syms = sorted(set(syms))
+                if not syms:
+                    st.error("有効な銘柄コードが見つかりませんでした。数字4桁（日本株）または英字ティッカー（米国株）を貼り付けてください。"
+                             + (f"（無視された例: {', '.join(ignored[:5])}）" if ignored else ""))
+                else:
+                    st.session_state.custom_universe = syms  # メモリに即保存（これで確実に反映）
+                    try:
+                        CUSTOM_UNIVERSE_FILE.write_text(json.dumps(syms, ensure_ascii=False, indent=1))
+                    except Exception:
+                        pass  # ファイル保存に失敗してもセッションで動く
+                    st.success(f"✅ {len(syms)}銘柄を登録しました！下のプルダウンに「カスタム」が追加されています。")
+                    if ignored:
+                        st.warning(f"コードとして認識できず無視したもの（{len(ignored)}件）: " + ", ".join(ignored[:10]))
+
+        if load_custom_universe():
+            cur = load_custom_universe()
+            st.caption(f"現在の登録: {len(cur)}銘柄 — " + ", ".join(cur[:10]) + (" ..." if len(cur) > 10 else ""))
+            if st.button("🗑 カスタムリストを削除"):
+                st.session_state.custom_universe = []
+                try:
+                    CUSTOM_UNIVERSE_FILE.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                st.rerun()
+
     custom_syms = load_custom_universe()
     universe_options = list(UNIVERSES.keys())
+    custom_label = f"カスタム（自分で登録した{len(custom_syms)}銘柄）"
     if custom_syms:
-        universe_options.append(f"カスタム（自分で登録した{len(custom_syms)}銘柄）")
+        universe_options.insert(0, custom_label)  # 先頭に置いて選びやすく
 
-    universe_name = st.selectbox("スキャンする銘柄群", universe_options)
+    universe_name = st.selectbox(
+        "スキャンする銘柄群", universe_options,
+        index=0,
+    )
 
     if universe_name.startswith("カスタム"):
         scan_targets = custom_syms
@@ -403,27 +463,7 @@ elif is_screening_mode:
         scan_targets = UNIVERSES[universe_name]
     st.caption(f"対象: {len(scan_targets)}銘柄 — " + ", ".join(scan_targets[:8]) + " ...")
     if "PayPay" in universe_name:
-        st.caption("⚠️ PayPay証券リストは参考版です（公式の最新取扱銘柄と多少異なる場合があります）。正確なリストは下の「カスタムリスト」から登録できます。")
-
-    with st.expander("📋 カスタムリスト（PayPay公式の銘柄コードを貼り付けて保存）", expanded=False):
-        st.caption("PayPay証券アプリ/サイトの取扱銘柄一覧からコードをコピーして貼り付けてください。カンマ・スペース・改行区切りOK。日本株は4桁コード、米国株はティッカー。")
-        paste = st.text_area("銘柄コードを貼り付け", placeholder="7203, 8058, 9433\nAAPL MSFT NVDA ...", height=100)
-        if st.button("💾 カスタムリストとして保存") and paste.strip():
-            import re
-            tokens = re.split(r"[,、\s\n]+", paste.strip())
-            syms = []
-            for tk in tokens:
-                tk = tk.strip().upper()
-                if not tk:
-                    continue
-                syms.append(normalize_input_symbol(tk))
-            syms = sorted(set(syms))
-            try:
-                CUSTOM_UNIVERSE_FILE.write_text(json.dumps(syms, ensure_ascii=False, indent=1))
-                st.success(f"{len(syms)}銘柄を保存しました。上のプルダウンで「カスタム」を選んでスキャンできます。")
-                st.rerun()
-            except Exception as e:
-                st.error(f"保存失敗: {e}")
+        st.caption("⚠️ PayPay証券リストは参考版です（公式の最新取扱銘柄と多少異なる場合があります）。正確なリストは上の「カスタムリスト」から登録できます。")
 
     est_min = max(1, round(len(scan_targets) * 3 / 60))
     st.caption(f"⏱ 予想所要時間: 約{est_min}分（{len(scan_targets)}銘柄）")
