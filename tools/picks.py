@@ -3,6 +3,7 @@
 総合スコア順にランキングする（無料・yfinanceのみ）。
 """
 from tools.screening import check_criteria, timing_judgment
+from tools.paypay_universe import PAYPAY_JP, PAYPAY_US, UNIVERSE_LABEL_JP, UNIVERSE_LABEL_US
 
 
 # スキャン対象ユニバース（日米の主要銘柄・流動性が高いもの）
@@ -59,9 +60,13 @@ UNIVERSES = {
     ],
 }
 
+# PayPay証券の取扱銘柄（参考版・全銘柄スキャン用）
+UNIVERSES[UNIVERSE_LABEL_JP] = PAYPAY_JP
+UNIVERSES[UNIVERSE_LABEL_US] = PAYPAY_US
 
-def scan_universe(
-    universe_name: str,
+
+def scan_symbols(
+    symbols: list[str],
     max_per: float = 10.0,
     min_dividend_yield: float = 2.5,
     min_roe: float = 10.0,
@@ -70,13 +75,8 @@ def scan_universe(
     min_op_margin: float = 8.0,
     progress_callback=None,
 ) -> list[dict]:
-    """
-    ユニバースを一括診断し、スコア順に返す。
-    総合スコア = 基準クリア数の割合(60%) + 売買タイミングスコア(40%)
-    """
-    symbols = UNIVERSES.get(universe_name, [])
+    """任意の銘柄リストを一括診断（scan_universeの実体）。"""
     results = []
-
     for i, sym in enumerate(symbols):
         if progress_callback:
             progress_callback(i, len(symbols), sym)
@@ -89,9 +89,8 @@ def scan_universe(
             tj = timing_judgment(sym)
 
             criteria_ratio = cr["passed"] / cr["total"] if cr["total"] else 0
-            timing_score = tj.get("score", 0)  # -4〜+5程度
+            timing_score = tj.get("score", 0)
             timing_norm = max(0.0, min(1.0, (timing_score + 4) / 9))
-
             combined = round((criteria_ratio * 0.6 + timing_norm * 0.4) * 100)
 
             results.append({
@@ -114,3 +113,26 @@ def scan_universe(
 
     results.sort(key=lambda r: r.get("combined_score", -1), reverse=True)
     return results
+
+
+def scan_universe(
+    universe_name: str,
+    max_per: float = 10.0,
+    min_dividend_yield: float = 2.5,
+    min_roe: float = 10.0,
+    min_dividend_streak: int = 3,
+    max_de_ratio: float = 100.0,
+    min_op_margin: float = 8.0,
+    progress_callback=None,
+) -> list[dict]:
+    """
+    ユニバースを一括診断し、スコア順に返す。
+    総合スコア = 基準クリア数の割合(60%) + 売買タイミングスコア(40%)
+    """
+    return scan_symbols(
+        UNIVERSES.get(universe_name, []),
+        max_per=max_per, min_dividend_yield=min_dividend_yield,
+        min_roe=min_roe, min_dividend_streak=min_dividend_streak,
+        max_de_ratio=max_de_ratio, min_op_margin=min_op_margin,
+        progress_callback=progress_callback,
+    )

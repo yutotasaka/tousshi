@@ -377,19 +377,67 @@ elif is_screening_mode:
     st.caption("日米の主要銘柄を、上の選定基準＋売買タイミング判定で自動スキャンして、今注目の銘柄をランキングします。（15〜20銘柄で1〜2分かかります）")
 
     from tools.picks import UNIVERSES
-    universe_name = st.selectbox("スキャンする銘柄群", list(UNIVERSES.keys()))
-    st.caption(f"対象: {len(UNIVERSES[universe_name])}銘柄 — " + ", ".join(UNIVERSES[universe_name][:8]) + " ...")
+
+    CUSTOM_UNIVERSE_FILE = Path("custom_universe.json")
+
+    def load_custom_universe() -> list[str]:
+        try:
+            if CUSTOM_UNIVERSE_FILE.exists():
+                data = json.loads(CUSTOM_UNIVERSE_FILE.read_text())
+                if isinstance(data, list):
+                    return data
+        except Exception:
+            pass
+        return []
+
+    custom_syms = load_custom_universe()
+    universe_options = list(UNIVERSES.keys())
+    if custom_syms:
+        universe_options.append(f"カスタム（自分で登録した{len(custom_syms)}銘柄）")
+
+    universe_name = st.selectbox("スキャンする銘柄群", universe_options)
+
+    if universe_name.startswith("カスタム"):
+        scan_targets = custom_syms
+    else:
+        scan_targets = UNIVERSES[universe_name]
+    st.caption(f"対象: {len(scan_targets)}銘柄 — " + ", ".join(scan_targets[:8]) + " ...")
+    if "PayPay" in universe_name:
+        st.caption("⚠️ PayPay証券リストは参考版です（公式の最新取扱銘柄と多少異なる場合があります）。正確なリストは下の「カスタムリスト」から登録できます。")
+
+    with st.expander("📋 カスタムリスト（PayPay公式の銘柄コードを貼り付けて保存）", expanded=False):
+        st.caption("PayPay証券アプリ/サイトの取扱銘柄一覧からコードをコピーして貼り付けてください。カンマ・スペース・改行区切りOK。日本株は4桁コード、米国株はティッカー。")
+        paste = st.text_area("銘柄コードを貼り付け", placeholder="7203, 8058, 9433\nAAPL MSFT NVDA ...", height=100)
+        if st.button("💾 カスタムリストとして保存") and paste.strip():
+            import re
+            tokens = re.split(r"[,、\s\n]+", paste.strip())
+            syms = []
+            for tk in tokens:
+                tk = tk.strip().upper()
+                if not tk:
+                    continue
+                syms.append(normalize_input_symbol(tk))
+            syms = sorted(set(syms))
+            try:
+                CUSTOM_UNIVERSE_FILE.write_text(json.dumps(syms, ensure_ascii=False, indent=1))
+                st.success(f"{len(syms)}銘柄を保存しました。上のプルダウンで「カスタム」を選んでスキャンできます。")
+                st.rerun()
+            except Exception as e:
+                st.error(f"保存失敗: {e}")
+
+    est_min = max(1, round(len(scan_targets) * 3 / 60))
+    st.caption(f"⏱ 予想所要時間: 約{est_min}分（{len(scan_targets)}銘柄）")
 
     if st.button("✨ 注目銘柄をスキャン", type="primary", use_container_width=True):
-        from tools.picks import scan_universe
+        from tools.picks import scan_symbols
 
         prog = st.progress(0, text="スキャン準備中...")
 
         def _cb(i, total, sym):
             prog.progress(i / total, text=f"診断中... {sym}（{i+1}/{total}）")
 
-        results = scan_universe(
-            universe_name,
+        results = scan_symbols(
+            scan_targets,
             max_per=max_per, min_dividend_yield=min_yield,
             min_roe=min_roe, min_dividend_streak=int(min_streak),
             max_de_ratio=max_de, min_op_margin=min_opm,
