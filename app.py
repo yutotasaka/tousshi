@@ -20,48 +20,12 @@ PORTFOLIO_FILE = Path("portfolio.json")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def load_portfolio() -> list[dict]:
-    try:
-        if PORTFOLIO_FILE.exists():
-            data = json.loads(PORTFOLIO_FILE.read_text())
-            if isinstance(data, list):
-                return data
-    except Exception:
-        pass
-    return []
-
-
-def save_portfolio(holdings: list[dict]) -> None:
-    try:
-        PORTFOLIO_FILE.write_text(json.dumps(holdings, ensure_ascii=False, indent=2))
-    except Exception as e:
-        st.warning(f"保存に失敗しました: {e}")
-
-
 def normalize_input_symbol(sym: str) -> str:
     """4桁の数字（日本株の証券コード）なら .T を付ける"""
     s = sym.strip().upper()
     if s.isdigit() and len(s) == 4:
         return f"{s}.T"
     return s
-
-
-def yen(v) -> str:
-    try:
-        return f"¥{float(v):,.0f}"
-    except (TypeError, ValueError):
-        return "—"
-
-
-def fmt_shares(v) -> str:
-    """端株（小数）を見やすく表示。0.5 → '0.5', 3.0 → '3', 1.2345 → '1.2345'"""
-    try:
-        f = float(v)
-        if f == int(f):
-            return f"{int(f):,}"
-        return f"{f:,.4f}".rstrip("0").rstrip(".")
-    except (TypeError, ValueError):
-        return "—"
 
 
 def render_evaluation(sym: str):
@@ -157,11 +121,6 @@ def render_evaluation(sym: str):
     return ev
 
 
-# ── Session state for portfolio (survives reruns even if file write fails) ───
-if "holdings" not in st.session_state:
-    st.session_state.holdings = load_portfolio()
-
-
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("📊 機関投資家エージェント")
@@ -169,234 +128,241 @@ with st.sidebar:
 
     mode = st.radio(
         "メニュー",
-        ["💼 ポートフォリオ", "🌐 マーケット", "🔍 銘柄検索"],
+        ["⭐ ウォッチリスト（売買判断）", "🎯 銘柄選定", "🌐 マーケット", "🔍 銘柄検索"],
         index=0,
-        help="ポートフォリオ＝保有銘柄の損益・診断 / マーケット＝世界の相場状況 / 銘柄検索＝個別銘柄の全情報",
+        help="ウォッチリスト＝登録銘柄の買い時/売り時判定 / 銘柄選定＝基準でふるいにかける / マーケット＝相場状況 / 銘柄検索＝個別銘柄の全情報",
     )
 
     st.divider()
     with st.expander("❓ 使い方", expanded=False):
         st.markdown("""
-**💼 ポートフォリオ**
-保有銘柄を登録して損益・テクニカル・決算をまとめてチェック
-- 日本株 → 証券コード4桁（例: `7203`）
-- 米国株 → ティッカー（例: `AAPL`）
-- 金額は日本株＝円、米国株＝ドル
+**⭐ ウォッチリスト**
+気になる銘柄を登録すると、平均PERとの比較で「買い増しゾーン/売り検討」を判定。
+材料・決算日・テクニカルも加味されます（損益はPayPay証券アプリで確認）
+
+**🎯 銘柄選定**
+PER10倍以下・配当利回り2.5%以上・増配傾向・連続増収・ROEなどの基準で✅❌診断
 
 **🌐 マーケット**
-世界の株価指数・為替・金利・コモディティを一覧表示
+資金フロー・世界の指数・為替・金利・注目ニュース
 
 **🔍 銘柄検索**
-気になる銘柄のコードを入れると、価格チャート・テクニカル・割安度・決算・財務を表示
+個別銘柄の総合評価・チャート・ファンダを表示
 
-すべて無料で利用できます。
+- 日本株 → 証券コード4桁（例: `7203`）／ 米国株 → ティッカー（例: `AAPL`）
+- すべて無料で利用できます
 """)
 
 
-is_portfolio_mode = "ポートフォリオ" in mode
+is_watchlist_mode = "ウォッチリスト" in mode
+is_screening_mode = "銘柄選定" in mode
 is_search_mode = "銘柄検索" in mode
 
 
 # ── Portfolio manager ─────────────────────────────────────────────────────────
-if is_portfolio_mode:
-    st.header("💼 ポートフォリオ管理")
-    st.caption("日本株は証券コード4桁（例: 7203 → トヨタ）、米国株はティッカー（例: AAPL）。金額は日本株＝円、米国株＝ドルで入力してください。合計は円換算で表示されます。")
+WATCHLIST_FILE = Path("watchlist.json")
 
-    holdings = st.session_state.holdings
 
-    with st.expander("➕ 銘柄を追加・変更", expanded=len(holdings) == 0):
-        st.caption("💡 PayPay証券など端株（0.5株など小数）もそのまま入力できます。")
-        input_mode = st.radio(
-            "入力方法",
-            ["保有数量＋取得単価（PayPay向け）", "投資金額から自動計算"],
-            horizontal=True,
-            help=(
-                "・保有数量＋取得単価：PayPay証券アプリの「保有数量」と「平均取得単価」をそのまま入力（小数OK）\n"
-                "・投資金額から自動計算：いくら分買ったか（円/ドル）を入れると株数を自動計算"
-            ),
-        )
-        by_amount = "金額" in input_mode
+def load_watchlist() -> list[str]:
+    try:
+        if WATCHLIST_FILE.exists():
+            data = json.loads(WATCHLIST_FILE.read_text())
+            if isinstance(data, list):
+                return [str(s) for s in data]
+    except Exception:
+        pass
+    # 旧ポートフォリオから移行
+    try:
+        if PORTFOLIO_FILE.exists():
+            old = json.loads(PORTFOLIO_FILE.read_text())
+            if isinstance(old, list):
+                return [h["symbol"] for h in old if isinstance(h, dict) and h.get("symbol")]
+    except Exception:
+        pass
+    return []
 
-        with st.form("add_holding", clear_on_submit=True):
-            col1, col2, col3 = st.columns([2, 2, 2])
-            with col1:
-                new_sym = st.text_input("証券コード / ティッカー", placeholder="7203 または AAPL")
-            with col2:
-                if by_amount:
-                    new_amount = st.number_input(
-                        "投資金額（日本株:円 / 米国株:ドル）",
-                        min_value=0.0, step=1000.0, value=0.0,
-                        help="PayPayで「1000円分買った」なら 1000 と入力",
-                    )
-                    new_shares = 0.0
-                else:
-                    new_shares = st.number_input(
-                        "保有数量（株）",
-                        min_value=0.0, step=0.1, value=0.0, format="%.4f",
-                        help="0.5 など小数もOK。PayPayアプリの「保有数量」をそのまま入力",
-                    )
-                    new_amount = 0.0
-            with col3:
-                new_cost = st.number_input(
-                    "取得単価（日本株:円 / 米国株:ドル）" + ("　※0=現在値で計算" if by_amount else ""),
-                    min_value=0.0, step=0.01, value=0.0, format="%.2f",
-                    help="PayPayアプリの「平均取得単価」をそのまま入力",
-                )
-            new_fx = st.number_input(
-                "取得為替レート（米国株のみ・任意）",
-                min_value=0.0, step=0.01, value=0.0, format="%.2f",
-                help=(
-                    "米国株で、PayPay証券の損益に近づけたい場合に入力。"
-                    "PayPayアプリの「取得為替レート」（例: 162.78）をそのまま入力すると、"
-                    "取得金額の円換算がPayPayと一致します。空欄(0)なら現在レートで計算。"
-                ),
-            )
-            add_btn = st.form_submit_button("追加 / 更新", use_container_width=True)
 
-        if add_btn:
-            sym = normalize_input_symbol(new_sym)
-            err = None
-            if not sym:
-                err = "証券コードまたはティッカーを入力してください"
-            elif by_amount and new_amount <= 0:
-                err = "投資金額を入力してください"
-            elif not by_amount and new_shares <= 0:
-                err = "保有数量を入力してください"
-            elif not by_amount and new_cost <= 0:
-                err = "取得単価を入力してください"
+def save_watchlist(symbols: list[str]) -> None:
+    try:
+        WATCHLIST_FILE.write_text(json.dumps(symbols, ensure_ascii=False, indent=2))
+    except Exception as e:
+        st.warning(f"保存に失敗しました: {e}")
 
-            if err:
-                st.error(err)
-            else:
-                cost = new_cost
-                if by_amount:
-                    # 取得単価が未入力なら現在値を取得して使う
-                    if cost <= 0:
-                        with st.spinner(f"{sym} の現在値を取得中..."):
-                            try:
-                                import yfinance as yf
-                                hist = yf.Ticker(sym).history(period="2d", auto_adjust=True)
-                                if hist is not None and not hist.empty:
-                                    cost = float(hist["Close"].iloc[-1])
-                            except Exception:
-                                cost = 0.0
-                    if cost <= 0:
-                        st.error(f"{sym} の株価を取得できませんでした。取得単価を手入力してください。")
-                        st.stop()
-                    new_shares = round(new_amount / cost, 6)
-                    st.info(f"計算結果: {new_amount:,.0f} ÷ 単価 {cost:,.2f} = **{fmt_shares(new_shares)} 株** として登録します")
 
-                # 取得為替レート（米国株のみ有効）
-                is_us = not sym.endswith(".T")
-                fx_at_cost = new_fx if (is_us and new_fx > 0) else None
+if "watchlist" not in st.session_state:
+    st.session_state.watchlist = load_watchlist()
 
-                existing = next((h for h in holdings if h["symbol"] == sym), None)
-                if existing:
-                    existing["shares"] = new_shares
-                    existing["avg_cost"] = round(cost, 4)
-                    if fx_at_cost:
-                        existing["fx_at_cost"] = round(fx_at_cost, 4)
-                    else:
-                        existing.pop("fx_at_cost", None)
-                    st.success(f"{sym} を更新しました（{fmt_shares(new_shares)}株 @ {cost:,.2f}）")
-                else:
-                    new_h = {"symbol": sym, "shares": new_shares, "avg_cost": round(cost, 4)}
-                    if fx_at_cost:
-                        new_h["fx_at_cost"] = round(fx_at_cost, 4)
-                    holdings.append(new_h)
-                    st.success(f"{sym} を追加しました（{fmt_shares(new_shares)}株 @ {cost:,.2f}）")
-                save_portfolio(holdings)
 
-    if holdings:
-        st.subheader("保有銘柄")
-        header = st.columns([2, 1.5, 2, 1])
-        header[0].markdown("**銘柄**")
-        header[1].markdown("**株数**")
-        header[2].markdown("**取得単価**")
-        for i, h in enumerate(holdings):
-            is_jp = str(h["symbol"]).endswith(".T")
-            unit = "円" if is_jp else "ドル"
-            cols = st.columns([2, 1.5, 2, 1])
-            cols[0].write(f"**{h['symbol']}** {'🇯🇵' if is_jp else '🇺🇸'}")
-            cols[1].write(f"{fmt_shares(h['shares'])} 株")
-            fx_note = f"（取得為替 {h['fx_at_cost']:.2f}）" if h.get("fx_at_cost") else ""
-            cols[2].write(f"{h['avg_cost']:,.2f} {unit}{fx_note}")
-            if cols[3].button("削除", key=f"del_{i}"):
-                holdings.pop(i)
-                save_portfolio(holdings)
-                st.rerun()
-        st.caption(f"合計 {len(holdings)} 銘柄（分析実行時に現在値・損益を円換算で算出します）")
+def render_timing(sym: str):
+    """買い時・売り時判定カードを描画。"""
+    from tools.screening import timing_judgment
+    tj = timing_judgment(sym)
 
-        # ── ダッシュボード ────────────────────────────────────────────────
-        st.divider()
-        st.subheader("📈 ダッシュボード")
-        st.caption("データ取得に数十秒かかります。")
-
-        haircut_pct = st.number_input(
-            "PayPay評価調整：米国株の評価額を◯%控除（任意）",
-            min_value=0.0, max_value=5.0, step=0.05, value=0.0, format="%.2f",
-            help=(
-                "PayPay証券の評価額はスプレッド（手数料）が引かれているため、アプリの方が数%高く出ます。"
-                "ここに調整率を入れると米国株の評価額をその分控除してPayPayに近づけます。"
-                "PayPayと見比べて、一致する値（目安0.5〜1.0）に調整してください。0なら市場価格のまま。"
-            ),
-        )
-
-        if st.button("💹 ダッシュボードを表示", type="primary", use_container_width=True):
-            from tools.portfolio import get_portfolio_snapshot
-            from tools.market_data import get_price_history
-            from tools.technical_analysis import run_technical_analysis
-            from tools.fundamentals import get_valuation_metrics, get_earnings_calendar
-
-            # 1) 損益サマリー
-            with st.spinner("損益を計算中..."):
-                try:
-                    snap = get_portfolio_snapshot(holdings, us_valuation_haircut_pct=haircut_pct)
-                    s = snap["summary"]
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("評価額合計", yen(s["total_value_jpy"]))
-                    m2.metric("取得額合計", yen(s["total_cost_jpy"]))
-                    m3.metric("評価損益", yen(s["total_pnl_jpy"]), f"{s['total_pnl_pct']:+.2f}%")
-                    m4.metric("ドル円", f"{snap['usdjpy_rate']:.2f}")
-                except Exception as e:
-                    st.error(f"損益計算に失敗しました: {e}")
-                    snap = {"holdings": []}
-
-            # 2) 各銘柄の詳細（損益・テクニカル・割安度・次回決算）
-            for r in snap["holdings"]:
-                sym = r["symbol"]
-                if "error" in r:
-                    st.warning(f"{sym}: {r['error']}")
-                    continue
-
-                pnl = r["unrealized_pnl_jpy"]
-                emoji = "🟢" if pnl >= 0 else "🔴"
-                with st.expander(
-                    f"{emoji} {sym}（{r.get('name','')}）　損益 {yen(pnl)}（{r['unrealized_pnl_pct']:+.1f}%）",
-                    expanded=False,
-                ):
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("現在値", f"{r['current_price']:,.1f} {r['currency']}", f"{r['day_change_pct']:+.2f}%")
-                    c2.metric("評価額（円）", yen(r["market_value_jpy"]))
-                    c3.metric("構成比", f"{r.get('allocation_pct', 0):.1f}%")
-                    tgt = r["analyst"].get("target_mean")
-                    ups = r["analyst"].get("upside_pct")
-                    c4.metric(
-                        "アナリスト目標",
-                        f"{tgt:,.0f}" if tgt else "—",
-                        f"{ups:+.1f}%" if ups is not None else None,
-                    )
-
-                    # 総合評価（テクニカル・ファンダ・空売り・決算材料・ニュースを統合）
-                    with st.spinner(f"{sym} を評価中..."):
-                        try:
-                            render_evaluation(sym)
-                        except Exception as e:
-                            st.caption(f"評価の生成に失敗しました: {e}")
-
-            st.success("ダッシュボード表示完了")
+    verdict = tj.get("verdict", "⚪ 判定不可")
+    advice = tj.get("advice", "")
+    if "買い" in verdict:
+        box = st.success
+    elif "売り" in verdict or "警戒" in verdict:
+        box = st.error if "売り検討" in verdict else st.warning
     else:
-        st.info("👆 上のフォームから保有銘柄を追加してください（例：PayPay証券でNVDAを0.5株、平均取得単価180ドルなら → コード「NVDA」保有数量「0.5」取得単価「180」）")
+        box = st.info
+    box(f"### {verdict}\n{advice}")
+
+    # PERバンド
+    if tj.get("avg_per") and tj.get("current_per"):
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("現在PER", f"{tj['current_per']}倍",
+                  f"{tj['deviation_pct']:+.1f}% vs 平均" if tj.get("deviation_pct") is not None else None,
+                  delta_color="inverse")
+        k2.metric(f"過去平均PER（約{tj.get('per_years_used','—')}年）", f"{tj['avg_per']}倍")
+        k3.metric("🟢 買い増し目安", f"{tj['buy_zone_price']:,.0f}", help="過去平均PERの15%割安水準")
+        k4.metric("🔴 売り検討目安", f"{tj['sell_zone_price']:,.0f}", help="過去平均PERの20%割高水準")
+        cur = tj.get("current_price")
+        fair = tj.get("fair_price")
+        if cur and fair:
+            st.caption(f"現在値 {cur:,.1f} ／ 適正株価の目安（平均PER×EPS）: {fair:,.1f}")
+
+    # 判定理由
+    st.markdown("**判定理由：**")
+    for f in tj.get("factors", []):
+        st.markdown(f"- {f}")
+
+    if tj.get("next_earnings"):
+        st.caption(f"📅 次回決算: {tj['next_earnings']}")
+
+    # ニュース
+    articles = tj.get("news", [])
+    if articles:
+        with st.expander(f"📰 直近の材料（{tj.get('news_tone','')}）", expanded=False):
+            for a in articles:
+                icon = {"好材料": "🟢", "悪材料": "🔴"}.get(a["sentiment"], "⚪")
+                topic = a.get("topic_jp", "")
+                if a.get("link"):
+                    st.markdown(f"{icon} {topic} [{a['title']}]({a['link']}) — {a.get('published','')}")
+                else:
+                    st.markdown(f"{icon} {topic} {a['title']} — {a.get('published','')}")
+    st.caption("※ " + tj.get("disclaimer", ""))
+
+
+# ── ウォッチリスト（売買判断） ─────────────────────────────────────────────
+if is_watchlist_mode:
+    st.header("⭐ ウォッチリスト — 買い時・売り時判定")
+    st.caption("銘柄を登録するだけでOK（損益はPayPay証券アプリで確認してください）。過去の平均PERと比べて今が割安か割高か、材料・決算・テクニカルを加味して判定します。")
+
+    watchlist = st.session_state.watchlist
+
+    wc1, wc2 = st.columns([3, 1])
+    with wc1:
+        new_sym_raw = st.text_input("銘柄を追加（証券コード4桁 or ティッカー）",
+                                    placeholder="7203 または NVDA", label_visibility="collapsed")
+    with wc2:
+        if st.button("➕ 追加", use_container_width=True) and new_sym_raw.strip():
+            sym = normalize_input_symbol(new_sym_raw)
+            if sym not in watchlist:
+                watchlist.append(sym)
+                save_watchlist(watchlist)
+                st.rerun()
+
+    if watchlist:
+        st.write("**登録銘柄：** " + " ".join(f"`{s}`" for s in watchlist))
+        rm_cols = st.columns(min(len(watchlist), 8))
+        for i, s in enumerate(watchlist):
+            if rm_cols[i % 8].button(f"🗑 {s}", key=f"rm_{s}"):
+                watchlist.remove(s)
+                save_watchlist(watchlist)
+                st.rerun()
+
+        st.divider()
+        if st.button("🎯 全銘柄の売買判定を実行", type="primary", use_container_width=True):
+            for s in watchlist:
+                st.subheader(f"{'🇯🇵' if s.endswith('.T') else '🇺🇸'} {s}")
+                with st.spinner(f"{s} を判定中..."):
+                    try:
+                        render_timing(s)
+                    except Exception as e:
+                        st.error(f"{s} の判定に失敗: {e}")
+                with st.expander(f"🔬 {s} の詳細評価（総合スコア・好悪材料）", expanded=False):
+                    try:
+                        render_evaluation(s)
+                    except Exception as e:
+                        st.caption(f"評価エラー: {e}")
+                st.divider()
+            st.success("全銘柄の判定完了")
+    else:
+        st.info("👆 気になる銘柄を追加してください（例: 7203、NVDA、AAPL）")
+
+
+# ── 銘柄選定（スクリーニング） ─────────────────────────────────────────────
+elif is_screening_mode:
+    st.header("🎯 銘柄選定 — 基準チェック")
+    st.caption("候補銘柄が選定基準を満たすか✅❌で診断します。基準は下で調整できます。")
+
+    with st.expander("⚙️ 選定基準の設定", expanded=False):
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            max_per = st.number_input("PER 上限（倍）", 1.0, 100.0, 10.0, 1.0)
+            min_yield = st.number_input("配当利回り 下限（%）", 0.0, 10.0, 2.5, 0.1)
+        with b2:
+            min_roe = st.number_input("ROE 下限（%）", 0.0, 50.0, 10.0, 1.0)
+            min_streak = st.number_input("連続増配 下限（年）", 0, 20, 3, 1)
+        with b3:
+            max_de = st.number_input("負債比率D/E 上限（%）", 0.0, 500.0, 100.0, 10.0)
+            min_opm = st.number_input("営業利益率 下限（%）", 0.0, 50.0, 8.0, 1.0)
+
+    cand_raw = st.text_input(
+        "診断する銘柄（カンマ区切りで複数OK）",
+        placeholder="例: 7203, 8058, 9433, VZ, MO",
+    )
+    if st.button("🔍 基準チェック実行", type="primary", use_container_width=True) and cand_raw.strip():
+        from tools.screening import check_criteria
+        symbols = [normalize_input_symbol(s) for s in cand_raw.replace("、", ",").split(",") if s.strip()]
+        results = []
+        for s in symbols:
+            with st.spinner(f"{s} を診断中..."):
+                try:
+                    r = check_criteria(
+                        s, max_per=max_per, min_dividend_yield=min_yield,
+                        min_roe=min_roe, min_dividend_streak=int(min_streak),
+                        max_de_ratio=max_de, min_op_margin=min_opm,
+                    )
+                    results.append(r)
+                except Exception as e:
+                    st.error(f"{s}: {e}")
+
+        # 合格数順に表示
+        results.sort(key=lambda r: r["passed"], reverse=True)
+        for r in results:
+            grade = r["grade"]
+            icon = "🏆" if grade.startswith("S") else ("🥈" if grade.startswith("A") else ("🥉" if grade.startswith("B") else "—"))
+            with st.expander(
+                f"{icon} {r['symbol']}（{r.get('name','')}）　{r['passed']}/{r['total']} 基準クリア　【{grade}】",
+                expanded=grade.startswith(("S", "A")),
+            ):
+                for chk in r["checks"]:
+                    if chk["pass"] is True:
+                        mark = "✅"
+                    elif chk["pass"] is False:
+                        mark = "❌"
+                    else:
+                        mark = "❔"
+                    st.markdown(
+                        f"{mark} **{chk['name']}**：{chk['actual']}　"
+                        f"<span style='color:gray'>（基準: {chk['threshold']}｜{chk['note']}）</span>",
+                        unsafe_allow_html=True,
+                    )
+                # 配当履歴ミニ表示
+                dh = r.get("dividend_history", [])
+                if len(dh) >= 3:
+                    import pandas as pd
+                    df = pd.DataFrame(dh).set_index("year")
+                    st.bar_chart(df["dividend"], height=150)
+                    st.caption("年間配当の推移（直近約10年）")
+                if st.button(f"⭐ {r['symbol']} をウォッチリストに追加", key=f"add_{r['symbol']}"):
+                    wl = st.session_state.watchlist
+                    if r["symbol"] not in wl:
+                        wl.append(r["symbol"])
+                        save_watchlist(wl)
+                        st.success("追加しました")
 
 elif is_search_mode:
     st.header("🔍 銘柄検索")
