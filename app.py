@@ -238,21 +238,55 @@ def cached_next_earnings(sym: str) -> dict:
         except Exception:
             pass
         cal = t.calendar
-        if isinstance(cal, dict) and cal.get("Earnings Date"):
-            ed = cal["Earnings Date"][0]
-            out["date"] = ed.strftime("%Y-%m-%d") if hasattr(ed, "strftime") else str(ed)
-            out["eps_estimate"] = cal.get("Earnings Average")
+        if isinstance(cal, dict):
+            if cal.get("Earnings Date"):
+                ed = cal["Earnings Date"][0]
+                out["date"] = ed.strftime("%Y-%m-%d") if hasattr(ed, "strftime") else str(ed)
+                out["eps_estimate"] = cal.get("Earnings Average")
+            if cal.get("Ex-Dividend Date"):
+                xd = cal["Ex-Dividend Date"]
+                out["ex_dividend_date"] = xd.strftime("%Y-%m-%d") if hasattr(xd, "strftime") else str(xd)
+        # 配当利回り（参考表示）
+        try:
+            dy = (t.info or {}).get("dividendYield")
+            if dy is not None:
+                out["dividend_yield"] = round(float(dy), 2)
+        except Exception:
+            pass
     except Exception:
         pass
     return out
 
 
-# ── ウォッチリスト（URL・ファイル二重保存で消えないように） ────────────────────
+# ── ウォッチリスト（ブラウザlocalStorage＋URL＋ファイルの三重保存で消えないように） ──
 WATCHLIST_FILE = Path("watchlist.json")
+_LS_KEY = "tousshi_watchlist"
+
+
+def _get_local_storage():
+    """streamlit-local-storage のインスタンスを取得（未導入なら None）。"""
+    try:
+        from streamlit_local_storage import LocalStorage
+        if "_ls" not in st.session_state:
+            st.session_state._ls = LocalStorage()
+        return st.session_state._ls
+    except Exception:
+        return None
 
 
 def load_watchlist() -> list[str]:
-    # 1) URLパラメータ（更新・再デプロイに強い）
+    # 1) ブラウザのlocalStorage（リブート・更新に最も強い）
+    ls = _get_local_storage()
+    if ls is not None:
+        try:
+            val = ls.getItem(_LS_KEY)
+            if val:
+                syms = [s.strip().upper() for s in str(val).split(",") if s.strip()]
+                if syms:
+                    return syms
+        except Exception:
+            pass
+    # 2) URLパラメータ
     try:
         qp = st.query_params.get("wl", "")
         if qp:
@@ -261,7 +295,7 @@ def load_watchlist() -> list[str]:
                 return syms
     except Exception:
         pass
-    # 2) ファイル
+    # 3) ファイル
     try:
         if WATCHLIST_FILE.exists():
             data = json.loads(WATCHLIST_FILE.read_text())
@@ -269,7 +303,7 @@ def load_watchlist() -> list[str]:
                 return [str(s) for s in data]
     except Exception:
         pass
-    # 3) 旧ポートフォリオから移行
+    # 4) 旧ポートフォリオから移行
     try:
         if PORTFOLIO_FILE.exists():
             old = json.loads(PORTFOLIO_FILE.read_text())
@@ -282,14 +316,23 @@ def load_watchlist() -> list[str]:
 
 def save_watchlist(symbols: list[str]) -> None:
     st.session_state.watchlist = symbols
+    csv = ",".join(symbols)
+    # 1) localStorage（ブラウザに永続保存＝リブートしても残る）
+    ls = _get_local_storage()
+    if ls is not None:
+        try:
+            ls.setItem(_LS_KEY, csv, key=f"ls_set_{len(symbols)}_{abs(hash(csv))%10000}")
+        except Exception:
+            pass
+    # 2) ファイル
     try:
         WATCHLIST_FILE.write_text(json.dumps(symbols, ensure_ascii=False, indent=2))
     except Exception:
         pass
-    # URLにも保存（ブックマークすれば再デプロイ後も復元できる）
+    # 3) URL
     try:
         if symbols:
-            st.query_params["wl"] = ",".join(symbols)
+            st.query_params["wl"] = csv
         else:
             st.query_params.pop("wl", None)
     except Exception:
@@ -307,7 +350,6 @@ def add_to_watchlist(sym: str) -> bool:
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = load_watchlist()
-    # 復元したリストをURLに同期
     if st.session_state.watchlist:
         save_watchlist(st.session_state.watchlist)
 
@@ -429,49 +471,63 @@ if is_watchlist_mode:
                     save_watchlist(watchlist)
                     st.rerun()
 
-        # ── 📅 決算カレンダー ──
+        # ── 📅 決算・配当カレンダー ──
         st.divider()
-        with st.expander("📅 決算カレンダー（登録銘柄の次回決算）", expanded=True):
-            if st.button("📅 決算予定を更新", key="refresh_earnings"):
+        with st.expander("📅 決算・配当カレンダー（登録銘柄）", expanded=True):
+            if st.button("📅 予定を更新", key="refresh_earnings"):
                 cached_next_earnings.clear()
             import datetime as _dt
-            rows = []
-            with st.spinner("決算予定を取得中..."):
-                for s in watchlist:
-                    info = cached_next_earnings(s)
-                    rows.append(info)
-            dated = [r for r in rows if r.get("date")]
-            undated = [r for r in rows if not r.get("date")]
-            # 日付順ソート
+
             def _parse(d):
                 try:
-                    return _dt.datetime.strptime(d[:10], "%Y-%m-%d").date()
+                    return _dt.datetime.strptime(str(d)[:10], "%Y-%m-%d").date()
                 except Exception:
-                    return _dt.date(2100, 1, 1)
-            dated.sort(key=lambda r: _parse(r["date"]))
+                    return None
+
             today = _dt.date.today()
-            if dated:
-                for r in dated:
-                    d = _parse(r["date"])
-                    days = (d - today).days
-                    if days < 0:
-                        badge = "🔘 発表済/未定"
-                    elif days == 0:
-                        badge = "🔴 本日"
-                    elif days <= 7:
-                        badge = f"🔴 あと{days}日"
-                    elif days <= 30:
-                        badge = f"🟠 あと{days}日"
+            events = []          # (date, kind, symbol, name, extra)
+            no_earnings = []
+            with st.spinner("決算・配当予定を取得中..."):
+                for s in watchlist:
+                    info = cached_next_earnings(s)
+                    name = info.get("name", s)
+                    ed = _parse(info.get("date"))
+                    if ed:
+                        est = f"予想EPS {info['eps_estimate']}" if info.get("eps_estimate") else ""
+                        events.append((ed, "決算", s, name, est))
                     else:
-                        badge = f"🟢 あと{days}日"
-                    flag = "🇯🇵" if r["symbol"].endswith(".T") else "🇺🇸"
-                    est = f"　予想EPS {r['eps_estimate']}" if r.get("eps_estimate") else ""
-                    st.markdown(f"**{r['date']}**　{badge}　{flag} `{r['symbol']}` {r.get('name','')}{est}")
-            if undated:
-                st.caption("決算日未取得: " + "、".join(f"`{r['symbol']}`" for r in undated)
-                           + "（日本株はYahoo Financeで取得できないことが多いです）")
-            if not dated and not undated:
-                st.caption("銘柄がありません")
+                        no_earnings.append(s)
+                    xd = _parse(info.get("ex_dividend_date"))
+                    if xd and xd >= today - _dt.timedelta(days=1):
+                        dy = f"配当利回り {info['dividend_yield']}%" if info.get("dividend_yield") else ""
+                        events.append((xd, "配当権利", s, name, dy))
+
+            events.sort(key=lambda e: e[0])
+
+            def _badge(days):
+                if days < 0:
+                    return "🔘 経過"
+                if days == 0:
+                    return "🔴 本日"
+                if days <= 7:
+                    return f"🔴 あと{days}日"
+                if days <= 30:
+                    return f"🟠 あと{days}日"
+                return f"🟢 あと{days}日"
+
+            if events:
+                for d, kind, s, name, extra in events:
+                    days = (d - today).days
+                    flag = "🇯🇵" if s.endswith(".T") else "🇺🇸"
+                    kind_icon = "📊" if kind == "決算" else "💰"
+                    extra_txt = f"　{extra}" if extra else ""
+                    st.markdown(f"**{d.strftime('%Y-%m-%d')}**　{_badge(days)}　{kind_icon}{kind}　{flag} `{s}` {name}{extra_txt}")
+            else:
+                st.caption("予定を取得できませんでした")
+
+            if no_earnings:
+                st.caption("決算日未取得: " + "、".join(f"`{s}`" for s in no_earnings)
+                           + "（日本株はYahoo Financeで決算日・配当日とも取得できないことが多いです）")
 
         st.divider()
         jc1, jc2 = st.columns([3, 1])
