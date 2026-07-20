@@ -215,6 +215,27 @@ def cached_bs(sym: str) -> dict:
     return get_balance_sheet_summary(sym)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_next_earnings(sym: str) -> dict:
+    """次回決算日と会社名を取得（1時間キャッシュ）。"""
+    import yfinance as yf
+    out = {"symbol": sym, "date": None, "name": sym, "eps_estimate": None}
+    try:
+        t = yf.Ticker(sym)
+        try:
+            out["name"] = (t.info or {}).get("shortName", sym)
+        except Exception:
+            pass
+        cal = t.calendar
+        if isinstance(cal, dict) and cal.get("Earnings Date"):
+            ed = cal["Earnings Date"][0]
+            out["date"] = ed.strftime("%Y-%m-%d") if hasattr(ed, "strftime") else str(ed)
+            out["eps_estimate"] = cal.get("Earnings Average")
+    except Exception:
+        pass
+    return out
+
+
 # ── ウォッチリスト（URL・ファイル二重保存で消えないように） ────────────────────
 WATCHLIST_FILE = Path("watchlist.json")
 
@@ -392,6 +413,50 @@ if is_watchlist_mode:
                 watchlist.remove(s)
                 save_watchlist(watchlist)
                 st.rerun()
+
+        # ── 📅 決算カレンダー ──
+        st.divider()
+        with st.expander("📅 決算カレンダー（登録銘柄の次回決算）", expanded=True):
+            if st.button("📅 決算予定を更新", key="refresh_earnings"):
+                cached_next_earnings.clear()
+            import datetime as _dt
+            rows = []
+            with st.spinner("決算予定を取得中..."):
+                for s in watchlist:
+                    info = cached_next_earnings(s)
+                    rows.append(info)
+            dated = [r for r in rows if r.get("date")]
+            undated = [r for r in rows if not r.get("date")]
+            # 日付順ソート
+            def _parse(d):
+                try:
+                    return _dt.datetime.strptime(d[:10], "%Y-%m-%d").date()
+                except Exception:
+                    return _dt.date(2100, 1, 1)
+            dated.sort(key=lambda r: _parse(r["date"]))
+            today = _dt.date.today()
+            if dated:
+                for r in dated:
+                    d = _parse(r["date"])
+                    days = (d - today).days
+                    if days < 0:
+                        badge = "🔘 発表済/未定"
+                    elif days == 0:
+                        badge = "🔴 本日"
+                    elif days <= 7:
+                        badge = f"🔴 あと{days}日"
+                    elif days <= 30:
+                        badge = f"🟠 あと{days}日"
+                    else:
+                        badge = f"🟢 あと{days}日"
+                    flag = "🇯🇵" if r["symbol"].endswith(".T") else "🇺🇸"
+                    est = f"　予想EPS {r['eps_estimate']}" if r.get("eps_estimate") else ""
+                    st.markdown(f"**{r['date']}**　{badge}　{flag} `{r['symbol']}` {r.get('name','')}{est}")
+            if undated:
+                st.caption("決算日未取得: " + "、".join(f"`{r['symbol']}`" for r in undated)
+                           + "（日本株はYahoo Financeで取得できないことが多いです）")
+            if not dated and not undated:
+                st.caption("銘柄がありません")
 
         st.divider()
         jc1, jc2 = st.columns([3, 1])
