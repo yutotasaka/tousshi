@@ -293,7 +293,7 @@ def render_timing(sym: str):
     else:
         box = st.info
     trend = tj.get("trend", "—")
-    trend_icon = "📈" if "上昇" in trend else ("📉" if "下降" in trend else "❔")
+    trend_icon = "📈" if "上昇" in trend else ("📉" if "下降" in trend else "⏸")
     box(f"### {verdict}　｜　{trend_icon} {trend}\n{advice}")
 
     # トレンド・RSI・アナリストを常時表示
@@ -459,18 +459,23 @@ elif is_screening_mode:
                 f"{icon} {r['symbol']}（{r.get('name','')}）　{r['passed']}/{r['total']} 基準クリア　【{grade}】",
                 expanded=grade.startswith(("S", "A")),
             ):
+                unknown = [chk for chk in r["checks"] if chk["pass"] is None]
                 for chk in r["checks"]:
                     if chk["pass"] is True:
-                        mark = "✅"
+                        st.markdown(
+                            f"✅ **{chk['name']}**：{chk['actual']}　"
+                            f"<span style='color:gray'>（基準: {chk['threshold']}｜{chk['note']}）</span>",
+                            unsafe_allow_html=True,
+                        )
                     elif chk["pass"] is False:
-                        mark = "❌"
-                    else:
-                        mark = "❔"
-                    st.markdown(
-                        f"{mark} **{chk['name']}**：{chk['actual']}　"
-                        f"<span style='color:gray'>（基準: {chk['threshold']}｜{chk['note']}）</span>",
-                        unsafe_allow_html=True,
-                    )
+                        st.markdown(
+                            f"❌ **{chk['name']}**：{chk['actual']}　"
+                            f"<span style='color:gray'>（基準: {chk['threshold']}｜{chk['note']}）</span>",
+                            unsafe_allow_html=True,
+                        )
+                if unknown:
+                    st.caption("📭 データが取得できず判定対象外： " + "、".join(chk["name"] for chk in unknown)
+                               + "（合格/不合格には数えていません）")
                 # 配当履歴ミニ表示
                 dh = r.get("dividend_history", [])
                 if len(dh) >= 3:
@@ -623,11 +628,15 @@ elif is_screening_mode:
                     if r.get("current_per") and r.get("avg_per"):
                         st.caption(f"現在PER {r['current_per']}倍 / 過去平均 {r['avg_per']}倍")
                     st.markdown("**基準チェック：**")
-                    line = "　".join(
-                        ("✅" if c["pass"] is True else "❌" if c["pass"] is False else "❔") + c["name"].split("（")[0]
-                        for c in r["checks"]
-                    )
-                    st.markdown(line)
+                    ok_names = [x["name"].split("（")[0] for x in r["checks"] if x["pass"] is True]
+                    ng_names = [x["name"].split("（")[0] for x in r["checks"] if x["pass"] is False]
+                    na_count = sum(1 for x in r["checks"] if x["pass"] is None)
+                    if ok_names:
+                        st.markdown("✅ 合格： " + "、".join(dict.fromkeys(ok_names)))
+                    if ng_names:
+                        st.markdown("❌ 未達： " + "、".join(dict.fromkeys(ng_names)))
+                    if na_count:
+                        st.caption(f"📭 データ取得できず判定対象外: {na_count}項目")
                     if r.get("factors"):
                         st.markdown("**売買タイミングの根拠：**")
                         for f in r["factors"][:4]:
