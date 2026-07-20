@@ -137,11 +137,11 @@ with st.sidebar:
     with st.expander("❓ 使い方", expanded=False):
         st.markdown("""
 **⭐ ウォッチリスト**
-気になる銘柄を登録すると、平均PERとの比較で「買い増しゾーン/売り検討」を判定。
+気になる銘柄を登録すると、妥当PER（過去平均×業種×成長力）との比較で「買い増しゾーン/売り検討」を判定。
 材料・決算日・テクニカルも加味されます（損益はPayPay証券アプリで確認）
 
 **🎯 銘柄選定**
-PER10倍以下・配当利回り2.5%以上・増配傾向・連続増収・ROEなどの基準で✅❌診断
+PER10倍以下・配当3%以上・配当性向低め・増配・増収増益・ROE・財務健全性の12基準で✅❌診断
 
 **🌐 マーケット**
 資金フロー・世界の指数・為替・金利・注目ニュース
@@ -208,26 +208,25 @@ def render_timing(sym: str):
         box = st.info
     box(f"### {verdict}\n{advice}")
 
-    # PERバンド
-    if tj.get("avg_per") and tj.get("current_per"):
+    # 妥当PERバンド（過去平均・業種標準・成長力のブレンド）
+    if tj.get("fair_per") and tj.get("current_per"):
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("現在PER", f"{tj['current_per']}倍",
-                  f"{tj['deviation_pct']:+.1f}% vs 平均" if tj.get("deviation_pct") is not None else None,
+                  f"{tj['deviation_pct']:+.1f}% vs 妥当PER" if tj.get("deviation_pct") is not None else None,
                   delta_color="inverse")
-        k2.metric(f"過去平均PER（約{tj.get('per_years_used','—')}年）", f"{tj['avg_per']}倍")
-        k3.metric("🟢 買い増し目安", f"{tj['buy_zone_price']:,.0f}", help="過去平均PERの15%割安水準")
-        k4.metric("🔴 売り検討目安", f"{tj['sell_zone_price']:,.0f}", help="過去平均PERの20%割高水準")
+        k2.metric("妥当PER（3要素ブレンド）", f"{tj['fair_per']}倍",
+                  help="過去平均PER50% + 業種標準PER30% + 利益成長率に見合うPER20% の加重平均")
+        if tj.get("buy_zone_price"):
+            k3.metric("🟢 買い増し目安", f"{tj['buy_zone_price']:,.0f}", help="妥当PERの15%割安水準")
+            k4.metric("🔴 売り検討目安", f"{tj['sell_zone_price']:,.0f}", help="妥当PERの20%割高水準")
         cur = tj.get("current_price")
         fair = tj.get("fair_price")
         if cur and fair:
-            st.caption(f"現在値 {cur:,.1f} ／ 適正株価の目安（平均PER×EPS）: {fair:,.1f}")
-    if tj.get("sector_benchmark_per"):
-        rel = tj.get("sector_relative_pct")
-        st.caption(
-            f"🏭 業種比較：{tj.get('sector_jp','—')}セクターの標準PER {tj['sector_benchmark_per']:.0f}倍に対して "
-            + (f"{rel:+.0f}%" if rel is not None else "—")
-            + "（業種によって適正PERは異なります）"
-        )
+            st.caption(f"現在値 {cur:,.1f} ／ 適正株価の目安（妥当PER×EPS）: {fair:,.1f}")
+        comp = tj.get("fair_per_components", {})
+        if comp:
+            st.caption("内訳：" + " / ".join(f"{k} {v:.0f}倍" for k, v in comp.items())
+                       + f"（業種: {tj.get('sector_jp','—')}）")
 
     # 判定理由
     st.markdown("**判定理由：**")
@@ -308,13 +307,18 @@ elif is_screening_mode:
         b1, b2, b3 = st.columns(3)
         with b1:
             max_per = st.number_input("PER 上限（倍）", 1.0, 100.0, 10.0, 1.0)
-            min_yield = st.number_input("配当利回り 下限（%）", 0.0, 10.0, 2.5, 0.1)
+            min_yield = st.number_input("配当利回り 下限（%）", 0.0, 10.0, 3.0, 0.1)
+            max_payout = st.number_input("配当性向 上限（%）", 10.0, 100.0, 60.0, 5.0,
+                                         help="低いほど無理なく配当を払えている＝増配余力あり")
         with b2:
             min_roe = st.number_input("ROE 下限（%）", 0.0, 50.0, 10.0, 1.0)
             min_streak = st.number_input("連続増配 下限（年）", 0, 20, 3, 1)
+            min_eg = st.number_input("利益成長 下限（前年比%）", -50.0, 100.0, 0.0, 1.0,
+                                     help="0なら減益でないこと")
         with b3:
             max_de = st.number_input("負債比率D/E 上限（%）", 0.0, 500.0, 100.0, 10.0)
             min_opm = st.number_input("営業利益率 下限（%）", 0.0, 50.0, 8.0, 1.0)
+            min_rg = st.number_input("増収率 下限（前年比%）", -50.0, 100.0, 3.0, 1.0)
 
     cand_raw = st.text_input(
         "診断する銘柄（カンマ区切りで複数OK）",
@@ -331,6 +335,8 @@ elif is_screening_mode:
                         s, max_per=max_per, min_dividend_yield=min_yield,
                         min_roe=min_roe, min_dividend_streak=int(min_streak),
                         max_de_ratio=max_de, min_op_margin=min_opm,
+                        max_payout_ratio=max_payout, min_rev_growth=min_rg,
+                        min_earnings_growth=min_eg,
                     )
                     results.append(r)
                 except Exception as e:
@@ -481,6 +487,8 @@ elif is_screening_mode:
             max_per=max_per, min_dividend_yield=min_yield,
             min_roe=min_roe, min_dividend_streak=int(min_streak),
             max_de_ratio=max_de, min_op_margin=min_opm,
+            max_payout_ratio=max_payout, min_rev_growth=min_rg,
+            min_earnings_growth=min_eg,
             progress_callback=_cb,
         )
         prog.progress(1.0, text="完了")

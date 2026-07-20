@@ -163,11 +163,14 @@ def revenue_streak(ticker) -> dict:
 def check_criteria(
     symbol: str,
     max_per: float = 10.0,
-    min_dividend_yield: float = 2.5,
+    min_dividend_yield: float = 3.0,
     min_roe: float = 10.0,
     min_dividend_streak: int = 3,
     max_de_ratio: float = 100.0,
     min_op_margin: float = 8.0,
+    max_payout_ratio: float = 60.0,
+    min_rev_growth: float = 3.0,
+    min_earnings_growth: float = 0.0,
 ) -> dict:
     """選定基準を1つずつ✅❌判定。"""
     t = yf.Ticker(symbol)
@@ -228,20 +231,47 @@ def check_criteria(
         "取得可能な全期間で増収（※データは最大4期。10期連続の完全確認は不可）",
         "売上が伸び続けているか")
 
-    # 5. ROE
+    # 5. 配当性向（低め＝無理なく配当を払えている＝増配余力がある）
+    payout = _num(info.get("payoutRatio"))
+    payout_pct = payout * 100 if payout is not None else None
+    add("配当性向", payout_pct is not None and 0 < payout_pct <= max_payout_ratio if payout_pct is not None else None,
+        f"{payout_pct:.0f}%" if payout_pct is not None else "取得不可", f"{max_payout_ratio:.0f}%以下",
+        "利益のうち配当に回す割合。低いほど減配リスクが小さく増配余力が大きい")
+
+    # 6. ROE
     roe = _num(info.get("returnOnEquity"))
     roe_pct = roe * 100 if roe is not None else None
     add("ROE（自己資本利益率）", roe_pct is not None and roe_pct >= min_roe if roe_pct is not None else None,
         f"{roe_pct:.1f}%" if roe_pct is not None else "取得不可", f"{min_roe:.0f}%以上",
         "株主のお金でどれだけ効率よく稼ぐか")
 
-    # 6. 財務（D/Eレシオ）
+    # 7. 業績（増益）
+    eg = _num(info.get("earningsGrowth"))
+    eg_pct = eg * 100 if eg is not None else None
+    add("業績（利益成長）", eg_pct is not None and eg_pct >= min_earnings_growth if eg_pct is not None else None,
+        f"前年比{eg_pct:+.1f}%" if eg_pct is not None else "取得不可", f"前年比{min_earnings_growth:+.0f}%以上",
+        "利益が伸びているか（減益なら減配・株価下落リスク）")
+
+    # 8. 成長性（増収率）
+    rg = _num(info.get("revenueGrowth"))
+    rg_pct = rg * 100 if rg is not None else None
+    add("成長性（増収率）", rg_pct is not None and rg_pct >= min_rev_growth if rg_pct is not None else None,
+        f"前年比{rg_pct:+.1f}%" if rg_pct is not None else "取得不可", f"前年比{min_rev_growth:+.0f}%以上",
+        "売上が伸びているか（成長の源泉）")
+
+    # 9. 財務健全性（D/Eレシオ）
     de = _num(info.get("debtToEquity"))
-    add("負債比率（D/E）", de is not None and de <= max_de_ratio if de is not None else None,
+    add("財務健全性（負債比率D/E）", de is not None and de <= max_de_ratio if de is not None else None,
         f"{de:.0f}%" if de is not None else "取得不可", f"{max_de_ratio:.0f}%以下",
         "借金が重すぎないか")
 
-    # 7. 営業利益率
+    # 10. 財務健全性（流動比率）
+    cr = _num(info.get("currentRatio"))
+    add("財務健全性（流動比率）", cr is not None and cr >= 1.2 if cr is not None else None,
+        f"{cr:.2f}" if cr is not None else "取得不可", "1.2以上",
+        "短期の支払い能力（1未満は資金繰りに注意）")
+
+    # 11. 営業利益率
     opm = _num(info.get("operatingMargins"))
     opm_pct = opm * 100 if opm is not None else None
     add("営業利益率", opm_pct is not None and opm_pct >= min_op_margin if opm_pct is not None else None,
@@ -324,56 +354,85 @@ def timing_judgment(symbol: str) -> dict:
         "current_per": round(cur_per, 1) if cur_per else None,
     }
 
-    # ── PERバンド ──
+    # ── 妥当PERの算出（3要素ブレンド） ──
+    # ① 過去平均PER（その銘柄自身の歴史）
+    # ② 業種標準PER（セクターによって適正水準は違う）
+    # ③ 成長力PER（利益成長率が高い銘柄ほど高いPERが正当化される）
     hist_per = _historical_avg_per(t, current_price)
     avg_per = hist_per.get("avg_per")
     factors = []
-    score = 0  # マイナス=買い方向、プラス=売り方向 ではなく、買い=+、売り=-で統一: +が買い時
+    score = 0  # +が買い方向、-が売り方向
 
-    if avg_per and cur_per and eps and eps > 0:
-        deviation = (cur_per - avg_per) / avg_per * 100
-        fair_price = avg_per * eps
-        result.update({
-            "avg_per": avg_per,
-            "per_years_used": hist_per.get("years_used"),
-            "deviation_pct": round(deviation, 1),
-            "fair_price": round(fair_price, 1),
-            "buy_zone_price": round(fair_price * 0.85, 1),   # 平均PER-15%
-            "sell_zone_price": round(fair_price * 1.20, 1),  # 平均PER+20%
-        })
-        if deviation <= -20:
-            score += 3
-            factors.append(f"PERが過去平均({avg_per}倍)より{-deviation:.0f}%低い → 歴史的に見て大きく割安")
-        elif deviation <= -5:
-            score += 2
-            factors.append(f"PERが過去平均より{-deviation:.0f}%低い → やや割安")
-        elif deviation >= 25:
-            score -= 3
-            factors.append(f"PERが過去平均({avg_per}倍)より{deviation:.0f}%高い → 歴史的に見て割高圏")
-        elif deviation >= 10:
-            score -= 2
-            factors.append(f"PERが過去平均より{deviation:.0f}%高い → やや割高")
-        else:
-            factors.append(f"PERは過去平均({avg_per}倍)並み → 妥当な水準")
-    else:
-        factors.append("過去平均PERを計算できず（赤字またはデータ不足）→ テクニカル中心で判定")
-
-    # ── 業種相対PER ──
     sec = sector_per_context(info)
     result["sector_jp"] = sec.get("sector_jp")
     bench = sec.get("benchmark_per")
-    if cur_per and bench:
-        rel = cur_per / bench
+
+    # 成長力PER：利益成長率%をそのままPER目安に（PEG=1相当）。8〜28倍にクランプ
+    eg = _num(info.get("earningsGrowth"))
+    rg = _num(info.get("revenueGrowth"))
+    growth_pct = (eg * 100) if eg is not None else ((rg * 100) if rg is not None else None)
+    growth_per = None
+    if growth_pct is not None:
+        growth_per = max(8.0, min(28.0, growth_pct)) if growth_pct > 0 else 8.0
+
+    # ブレンド（利用可能な要素だけで加重平均）
+    components = []
+    if avg_per:
+        components.append(("過去平均", avg_per, 0.5))
+    if bench:
+        components.append(("業種標準", bench, 0.3))
+    if growth_per:
+        components.append(("成長力", growth_per, 0.2))
+
+    fair_per = None
+    if components:
+        wsum = sum(w for _, _, w in components)
+        fair_per = round(sum(v * w for _, v, w in components) / wsum, 1)
+        result["fair_per"] = fair_per
+        result["fair_per_components"] = {name: v for name, v, _ in components}
+        result["avg_per"] = avg_per
+        result["per_years_used"] = hist_per.get("years_used")
         result["sector_benchmark_per"] = bench
-        result["sector_relative_pct"] = round((rel - 1) * 100, 1)
-        if rel <= 0.7:
-            score += 1
-            factors.append(f"業種相対でも割安：{sec['sector_jp']}の標準PER {bench:.0f}倍に対し{cur_per:.1f}倍（{rel*100:.0f}%）")
-        elif rel >= 1.4:
-            score -= 1
-            factors.append(f"業種相対で割高：{sec['sector_jp']}の標準PER {bench:.0f}倍に対し{cur_per:.1f}倍（{rel*100:.0f}%）")
+        result["growth_per"] = growth_per
+        comp_txt = "・".join(f"{n}{v:.0f}倍" for n, v, _ in components)
+        factors.append(f"妥当PER {fair_per}倍（{comp_txt} のブレンド）")
+
+    if fair_per and cur_per and eps and eps > 0:
+        deviation = (cur_per - fair_per) / fair_per * 100
+        fair_price = fair_per * eps
+        result.update({
+            "deviation_pct": round(deviation, 1),
+            "fair_price": round(fair_price, 1),
+            "buy_zone_price": round(fair_price * 0.85, 1),   # 妥当PER-15%
+            "sell_zone_price": round(fair_price * 1.20, 1),  # 妥当PER+20%
+        })
+        if deviation <= -20:
+            score += 3
+            factors.append(f"現在PER {cur_per:.1f}倍は妥当PERより{-deviation:.0f}%低い → 大きく割安")
+        elif deviation <= -5:
+            score += 2
+            factors.append(f"現在PERは妥当PERより{-deviation:.0f}%低い → やや割安")
+        elif deviation >= 25:
+            score -= 3
+            factors.append(f"現在PER {cur_per:.1f}倍は妥当PERより{deviation:.0f}%高い → 割高圏")
+        elif deviation >= 10:
+            score -= 2
+            factors.append(f"現在PERは妥当PERより{deviation:.0f}%高い → やや割高")
         else:
-            factors.append(f"業種内では標準的なPER水準（{sec['sector_jp']}標準 {bench:.0f}倍 vs {cur_per:.1f}倍）")
+            factors.append("現在PERは妥当PER並み → 価格は適正水準")
+    else:
+        factors.append("妥当PERを算出できず（赤字またはデータ不足）→ テクニカル中心で判定")
+
+    # 参考：個別の視点も表示
+    if cur_per and avg_per:
+        d1 = (cur_per - avg_per) / avg_per * 100
+        factors.append(f"　└ 自社の過去平均{avg_per}倍と比べて {d1:+.0f}%")
+    if cur_per and bench:
+        d2 = (cur_per - bench) / bench * 100
+        result["sector_relative_pct"] = round(d2, 1)
+        factors.append(f"　└ {sec['sector_jp']}の業種標準{bench:.0f}倍と比べて {d2:+.0f}%")
+    if cur_per and growth_per:
+        factors.append(f"　└ 利益成長率から見た目安{growth_per:.0f}倍と比べて {(cur_per-growth_per)/growth_per*100:+.0f}%")
 
     # ── テクニカル ──
     hist = get_price_history(symbol, "6mo")

@@ -68,11 +68,14 @@ UNIVERSES[UNIVERSE_LABEL_US] = PAYPAY_US
 def scan_symbols(
     symbols: list[str],
     max_per: float = 10.0,
-    min_dividend_yield: float = 2.5,
+    min_dividend_yield: float = 3.0,
     min_roe: float = 10.0,
     min_dividend_streak: int = 3,
     max_de_ratio: float = 100.0,
     min_op_margin: float = 8.0,
+    max_payout_ratio: float = 60.0,
+    min_rev_growth: float = 3.0,
+    min_earnings_growth: float = 0.0,
     progress_callback=None,
 ) -> list[dict]:
     """任意の銘柄リストを一括診断（scan_universeの実体）。"""
@@ -85,6 +88,8 @@ def scan_symbols(
                 sym, max_per=max_per, min_dividend_yield=min_dividend_yield,
                 min_roe=min_roe, min_dividend_streak=min_dividend_streak,
                 max_de_ratio=max_de_ratio, min_op_margin=min_op_margin,
+                max_payout_ratio=max_payout_ratio, min_rev_growth=min_rev_growth,
+                min_earnings_growth=min_earnings_growth,
             )
             tj = timing_judgment(sym)
 
@@ -118,11 +123,14 @@ def scan_symbols(
 def scan_universe(
     universe_name: str,
     max_per: float = 10.0,
-    min_dividend_yield: float = 2.5,
+    min_dividend_yield: float = 3.0,
     min_roe: float = 10.0,
     min_dividend_streak: int = 3,
     max_de_ratio: float = 100.0,
     min_op_margin: float = 8.0,
+    max_payout_ratio: float = 60.0,
+    min_rev_growth: float = 3.0,
+    min_earnings_growth: float = 0.0,
     progress_callback=None,
 ) -> list[dict]:
     """
@@ -134,5 +142,7 @@ def scan_universe(
         max_per=max_per, min_dividend_yield=min_dividend_yield,
         min_roe=min_roe, min_dividend_streak=min_dividend_streak,
         max_de_ratio=max_de_ratio, min_op_margin=min_op_margin,
+        max_payout_ratio=max_payout_ratio, min_rev_growth=min_rev_growth,
+        min_earnings_growth=min_earnings_growth,
         progress_callback=progress_callback,
     )
