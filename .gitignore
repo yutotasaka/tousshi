@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+portfolio.json
+watchlist.json
+custom_universe.json
