@@ -215,6 +215,17 @@ def cached_bs(sym: str) -> dict:
     return get_balance_sheet_summary(sym)
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def cached_name(sym: str) -> str:
+    """銘柄名を取得（1日キャッシュ）。取得できなければコードを返す。"""
+    import yfinance as yf
+    try:
+        info = yf.Ticker(sym).info or {}
+        return info.get("shortName") or info.get("longName") or sym
+    except Exception:
+        return sym
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_next_earnings(sym: str) -> dict:
     """次回決算日と会社名を取得（1時間キャッシュ）。"""
@@ -406,13 +417,17 @@ if is_watchlist_mode:
                 st.rerun()
 
     if watchlist:
-        st.write("**登録銘柄：** " + " ".join(f"`{s}`" for s in watchlist))
-        rm_cols = st.columns(min(len(watchlist), 8))
-        for i, s in enumerate(watchlist):
-            if rm_cols[i % 8].button(f"🗑 {s}", key=f"rm_{s}"):
-                watchlist.remove(s)
-                save_watchlist(watchlist)
-                st.rerun()
+        st.markdown("**登録銘柄：**")
+        with st.spinner("銘柄名を取得中..."):
+            for i, s in enumerate(watchlist):
+                flag = "🇯🇵" if s.endswith(".T") else "🇺🇸"
+                name = cached_name(s)
+                lc, rc = st.columns([5, 1])
+                lc.markdown(f"{flag} **{s}**　{name}")
+                if rc.button("🗑 削除", key=f"rm_{s}"):
+                    watchlist.remove(s)
+                    save_watchlist(watchlist)
+                    st.rerun()
 
         # ── 📅 決算カレンダー ──
         st.divider()
@@ -473,7 +488,7 @@ if is_watchlist_mode:
 
         if st.session_state.get("wl_show_results"):
             for s in watchlist:
-                st.subheader(f"{'🇯🇵' if s.endswith('.T') else '🇺🇸'} {s}")
+                st.subheader(f"{'🇯🇵' if s.endswith('.T') else '🇺🇸'} {s}　{cached_name(s)}")
                 with st.spinner(f"{s} を判定中..."):
                     try:
                         render_timing(s)
