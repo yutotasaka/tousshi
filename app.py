@@ -30,8 +30,7 @@ def normalize_input_symbol(sym: str) -> str:
 
 def render_evaluation(sym: str):
     """銘柄の総合評価（スコア・1ヶ月見通し・好材料/悪材料・空売り・ニュース）を描画。"""
-    from tools.scoring import evaluate_stock
-    ev = evaluate_stock(sym)
+    ev = cached_evaluation(sym)
 
     score = ev.get("total_score", 0)
     rating = ev.get("rating", "—")
@@ -159,11 +158,78 @@ is_screening_mode = "銘柄選定" in mode
 is_search_mode = "銘柄検索" in mode
 
 
-# ── Portfolio manager ─────────────────────────────────────────────────────────
+# ── データ取得キャッシュ（15分）：再描画を速くし、結果消失を防ぐ ──────────────
+@st.cache_data(ttl=900, show_spinner=False)
+def cached_timing(sym: str) -> dict:
+    from tools.screening import timing_judgment
+    return timing_judgment(sym)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def cached_evaluation(sym: str) -> dict:
+    from tools.scoring import evaluate_stock
+    return evaluate_stock(sym)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def cached_criteria(sym: str, params: tuple) -> dict:
+    from tools.screening import check_criteria
+    (max_per, min_yield, min_roe, min_streak, max_de, min_opm,
+     max_payout, min_rg, min_eg) = params
+    return check_criteria(
+        sym, max_per=max_per, min_dividend_yield=min_yield,
+        min_roe=min_roe, min_dividend_streak=int(min_streak),
+        max_de_ratio=max_de, min_op_margin=min_opm,
+        max_payout_ratio=max_payout, min_rev_growth=min_rg,
+        min_earnings_growth=min_eg,
+    )
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def cached_val(sym: str) -> dict:
+    from tools.fundamentals import get_valuation_metrics
+    return get_valuation_metrics(sym)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def cached_hist(sym: str, period: str) -> dict:
+    from tools.market_data import get_price_history
+    return get_price_history(sym, period)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def cached_cal(sym: str) -> dict:
+    from tools.fundamentals import get_earnings_calendar
+    return get_earnings_calendar(sym)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def cached_eh(sym: str) -> dict:
+    from tools.fundamentals import get_earnings_history
+    return get_earnings_history(sym)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def cached_bs(sym: str) -> dict:
+    from tools.fundamentals import get_balance_sheet_summary
+    return get_balance_sheet_summary(sym)
+
+
+# ── ウォッチリスト（URL・ファイル二重保存で消えないように） ────────────────────
 WATCHLIST_FILE = Path("watchlist.json")
 
 
 def load_watchlist() -> list[str]:
+    # 1) URLパラメータ（更新・再デプロイに強い）
+    try:
+        qp = st.query_params.get("wl", "")
+        if qp:
+            syms = [s.strip().upper() for s in qp.split(",") if s.strip()]
+            if syms:
+                return syms
+    except Exception:
+        pass
+    # 2) ファイル
     try:
         if WATCHLIST_FILE.exists():
             data = json.loads(WATCHLIST_FILE.read_text())
@@ -171,7 +237,7 @@ def load_watchlist() -> list[str]:
                 return [str(s) for s in data]
     except Exception:
         pass
-    # 旧ポートフォリオから移行
+    # 3) 旧ポートフォリオから移行
     try:
         if PORTFOLIO_FILE.exists():
             old = json.loads(PORTFOLIO_FILE.read_text())
@@ -183,20 +249,40 @@ def load_watchlist() -> list[str]:
 
 
 def save_watchlist(symbols: list[str]) -> None:
+    st.session_state.watchlist = symbols
     try:
         WATCHLIST_FILE.write_text(json.dumps(symbols, ensure_ascii=False, indent=2))
-    except Exception as e:
-        st.warning(f"保存に失敗しました: {e}")
+    except Exception:
+        pass
+    # URLにも保存（ブックマークすれば再デプロイ後も復元できる）
+    try:
+        if symbols:
+            st.query_params["wl"] = ",".join(symbols)
+        else:
+            st.query_params.pop("wl", None)
+    except Exception:
+        pass
+
+
+def add_to_watchlist(sym: str) -> bool:
+    wl = st.session_state.watchlist
+    if sym not in wl:
+        wl.append(sym)
+        save_watchlist(wl)
+        return True
+    return False
 
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = load_watchlist()
+    # 復元したリストをURLに同期
+    if st.session_state.watchlist:
+        save_watchlist(st.session_state.watchlist)
 
 
 def render_timing(sym: str):
     """買い時・売り時判定カードを描画。"""
-    from tools.screening import timing_judgment
-    tj = timing_judgment(sym)
+    tj = cached_timing(sym)
 
     verdict = tj.get("verdict", "⚪ 判定不可")
     advice = tj.get("advice", "")
@@ -279,7 +365,19 @@ if is_watchlist_mode:
                 st.rerun()
 
         st.divider()
-        if st.button("🎯 全銘柄の売買判定を実行", type="primary", use_container_width=True):
+        jc1, jc2 = st.columns([3, 1])
+        with jc1:
+            if st.button("🎯 全銘柄の売買判定を実行", type="primary", use_container_width=True):
+                st.session_state.wl_show_results = True
+                # 最新データで再判定したい場合に備えキャッシュをクリア
+                cached_timing.clear()
+                cached_evaluation.clear()
+        with jc2:
+            if st.session_state.get("wl_show_results") and st.button("結果を閉じる", use_container_width=True):
+                st.session_state.wl_show_results = False
+                st.rerun()
+
+        if st.session_state.get("wl_show_results"):
             for s in watchlist:
                 st.subheader(f"{'🇯🇵' if s.endswith('.T') else '🇺🇸'} {s}")
                 with st.spinner(f"{s} を判定中..."):
@@ -293,7 +391,7 @@ if is_watchlist_mode:
                     except Exception as e:
                         st.caption(f"評価エラー: {e}")
                 st.divider()
-            st.success("全銘柄の判定完了")
+            st.success("全銘柄の判定完了（結果は画面を操作しても保持されます）")
     else:
         st.info("👆 気になる銘柄を追加してください（例: 7203、NVDA、AAPL）")
 
@@ -324,26 +422,25 @@ elif is_screening_mode:
         "診断する銘柄（カンマ区切りで複数OK）",
         placeholder="例: 7203, 8058, 9433, VZ, MO",
     )
+    crit_params = (max_per, min_yield, min_roe, int(min_streak), max_de, min_opm,
+                   max_payout, min_rg, min_eg)
+
     if st.button("🔍 基準チェック実行", type="primary", use_container_width=True) and cand_raw.strip():
-        from tools.screening import check_criteria
         symbols = [normalize_input_symbol(s) for s in cand_raw.replace("、", ",").split(",") if s.strip()]
         results = []
         for s in symbols:
             with st.spinner(f"{s} を診断中..."):
                 try:
-                    r = check_criteria(
-                        s, max_per=max_per, min_dividend_yield=min_yield,
-                        min_roe=min_roe, min_dividend_streak=int(min_streak),
-                        max_de_ratio=max_de, min_op_margin=min_opm,
-                        max_payout_ratio=max_payout, min_rev_growth=min_rg,
-                        min_earnings_growth=min_eg,
-                    )
+                    r = cached_criteria(s, crit_params)
                     results.append(r)
                 except Exception as e:
                     st.error(f"{s}: {e}")
-
-        # 合格数順に表示
         results.sort(key=lambda r: r["passed"], reverse=True)
+        st.session_state.check_results = results
+
+    # 結果はセッションに保持（ボタンを押しても消えない）
+    if st.session_state.get("check_results"):
+        results = st.session_state.check_results
         for r in results:
             grade = r["grade"]
             icon = "🏆" if grade.startswith("S") else ("🥈" if grade.startswith("A") else ("🥉" if grade.startswith("B") else "—"))
@@ -370,12 +467,11 @@ elif is_screening_mode:
                     df = pd.DataFrame(dh).set_index("year")
                     st.bar_chart(df["dividend"], height=150)
                     st.caption("年間配当の推移（直近約10年）")
-                if st.button(f"⭐ {r['symbol']} をウォッチリストに追加", key=f"add_{r['symbol']}"):
-                    wl = st.session_state.watchlist
-                    if r["symbol"] not in wl:
-                        wl.append(r["symbol"])
-                        save_watchlist(wl)
-                        st.success("追加しました")
+                if r["symbol"] in st.session_state.watchlist:
+                    st.caption("⭐ ウォッチリスト登録済み")
+                elif st.button(f"⭐ {r['symbol']} をウォッチリストに追加", key=f"add_{r['symbol']}"):
+                    add_to_watchlist(r["symbol"])
+                    st.success("追加しました（結果はこのまま保持されます）")
 
     # ── ✨ 注目銘柄ピックアップ ──────────────────────────────────────────
     st.divider()
@@ -492,7 +588,14 @@ elif is_screening_mode:
             progress_callback=_cb,
         )
         prog.progress(1.0, text="完了")
+        st.session_state.scan_results = results
+        st.session_state.scan_universe_label = universe_name
 
+    # スキャン結果はセッションに保持（ボタンを押しても消えない）
+    if st.session_state.get("scan_results"):
+        results = st.session_state.scan_results
+        if st.session_state.get("scan_universe_label"):
+            st.caption(f"スキャン結果: {st.session_state.scan_universe_label}")
         ok_results = [r for r in results if "error" not in r]
         if not ok_results:
             st.error("データを取得できませんでした。時間をおいて再実行してください。")
@@ -518,12 +621,11 @@ elif is_screening_mode:
                         st.markdown("**売買タイミングの根拠：**")
                         for f in r["factors"][:4]:
                             st.markdown(f"- {f}")
-                    if st.button(f"⭐ ウォッチリストに追加", key=f"pick_{r['symbol']}"):
-                        wl = st.session_state.watchlist
-                        if r["symbol"] not in wl:
-                            wl.append(r["symbol"])
-                            save_watchlist(wl)
-                            st.success("追加しました")
+                    if r["symbol"] in st.session_state.watchlist:
+                        st.caption("⭐ ウォッチリスト登録済み")
+                    elif st.button(f"⭐ ウォッチリストに追加", key=f"pick_{r['symbol']}"):
+                        add_to_watchlist(r["symbol"])
+                        st.success("追加しました（結果はこのまま保持されます）")
             st.caption("※ スコア = 選定基準クリア率60% + 売買タイミング40%。機械的な参考情報であり、推奨ではありません。")
 
 elif is_search_mode:
@@ -537,7 +639,11 @@ elif is_search_mode:
         search_btn = st.button("🔍 検索", type="primary", use_container_width=True)
 
     if search_btn and search_sym_raw.strip():
-        sym = normalize_input_symbol(search_sym_raw)
+        st.session_state.search_sym = normalize_input_symbol(search_sym_raw)
+
+    # 検索結果はセッションに保持（他の操作をしても消えない）
+    if st.session_state.get("search_sym"):
+        sym = st.session_state.search_sym
         from tools.market_data import get_price_history
         from tools.technical_analysis import run_technical_analysis
         from tools.fundamentals import (
@@ -552,11 +658,11 @@ elif is_search_mode:
             # ── 基本情報・現在値 ──
             val = {}
             try:
-                val = get_valuation_metrics(sym)
+                val = cached_val(sym)
             except Exception as e:
                 val = {"error": str(e)}
 
-            hist = get_price_history(sym, "6mo")
+            hist = cached_hist(sym, "6mo")
 
             if "error" in hist and "error" in val:
                 st.error(f"「{sym}」のデータが見つかりません。コードを確認してください（日本株は4桁数字、米国株はアルファベット）。")
@@ -572,6 +678,11 @@ elif is_search_mode:
                 render_evaluation(sym)
             except Exception as e:
                 st.caption(f"総合評価の生成に失敗しました: {e}")
+            if sym in st.session_state.watchlist:
+                st.caption("⭐ ウォッチリスト登録済み")
+            elif st.button(f"⭐ {sym} をウォッチリストに追加", key=f"srch_add_{sym}"):
+                add_to_watchlist(sym)
+                st.success("追加しました")
             st.divider()
 
             if val.get("sector"):
@@ -638,7 +749,7 @@ elif is_search_mode:
             # ── 決算 ──
             st.markdown("#### 📅 決算")
             try:
-                cal = get_earnings_calendar(sym)
+                cal = cached_cal(sym)
                 if "error" not in cal:
                     if cal.get("next_earnings_dates"):
                         est = f"（予想EPS {cal['eps_estimate_avg']}）" if cal.get("eps_estimate_avg") else ""
@@ -653,7 +764,7 @@ elif is_search_mode:
                 st.caption("決算カレンダーを取得できませんでした")
 
             try:
-                eh = get_earnings_history(sym)
+                eh = cached_eh(sym)
                 if "error" not in eh and eh.get("quarterly"):
                     st.write("**四半期業績**（直近4四半期）:")
                     import pandas as pd
@@ -672,7 +783,7 @@ elif is_search_mode:
 
             # ── 財務 ──
             try:
-                bs = get_balance_sheet_summary(sym)
+                bs = cached_bs(sym)
                 if "error" not in bs:
                     st.markdown("#### 🏦 財務健全性")
                     f1, f2, f3, f4 = st.columns(4)
