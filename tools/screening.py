@@ -10,7 +10,8 @@ import pandas as pd
 import yfinance as yf
 
 from tools.market_data import get_price_history
-from tools.technical_analysis import run_technical_analysis
+from tools.technical_analysis import run_technical_analysis, sell_signal_analysis
+from tools.fundamentals import get_earnings_calendar
 from tools.news_feed import get_stock_news
 
 
@@ -491,6 +492,28 @@ def timing_judgment(symbol: str) -> dict:
         result["trend"] = "判定不可"
         factors.append("テクニカル：価格データを取得できずトレンド判定不可")
 
+    # ── 売りシグナル専用分析（25日線・MACDデッドクロス・RSI・出来高） ──
+    sell = {}
+    if "data" in hist and hist["data"]:
+        try:
+            sell = sell_signal_analysis(hist["data"])
+        except Exception:
+            sell = {}
+    if sell and "error" not in sell:
+        result["sell_signal"] = sell
+        ss = sell.get("sell_score", 0)
+        # 売りシグナルスコアを総合スコアに反映（強いほど売り方向＝マイナス）
+        if ss >= 60:
+            score -= 3
+        elif ss >= 35:
+            score -= 2
+        elif ss >= 15:
+            score -= 1
+        if sell.get("sell_signals"):
+            factors.append(f"【売りシグナル分析】{sell.get('level','')}（売り度 {ss}/100）")
+            for s in sell["sell_signals"]:
+                factors.append(f"　└ {s}")
+
     # ── アナリスト・レーティング ──
     rec = (info.get("recommendationKey") or "").lower()
     n_analysts = info.get("numberOfAnalystOpinions") or 0
@@ -531,21 +554,52 @@ def timing_judgment(symbol: str) -> dict:
             score += 1
         result["news"] = news.get("articles", [])[:5]
 
-    # ── 決算接近 ──
+    # ── 決算：接近＋業績動向 ──
+    eg_pct = (eg * 100) if eg is not None else None
+    if eg_pct is not None:
+        if eg_pct < -10:
+            score -= 2
+            factors.append(f"📉 決算：直近の利益成長が {eg_pct:+.0f}%（減益）→ 売り材料")
+        elif eg_pct < 0:
+            score -= 1
+            factors.append(f"📉 決算：直近の利益成長が {eg_pct:+.0f}%（小幅減益）")
     try:
-        cal = t.calendar
-        if isinstance(cal, dict) and cal.get("Earnings Date"):
-            ed = cal["Earnings Date"][0]
-            ed_ts = pd.Timestamp(ed)
-            days = (ed_ts - pd.Timestamp.now()).days
-            result["next_earnings"] = str(ed)
-            if 0 <= days <= 14:
-                factors.append(f"⚠️ {days}日後に決算発表 → 結果次第で大きく動く。直前の新規買いはリスク高")
+        ecal = get_earnings_calendar(symbol)
+        if isinstance(ecal, dict) and "error" not in ecal:
+            # 過去サプライズ：連続で下回っていれば売り材料
+            sp = ecal.get("past_surprises", [])
+            valid = [s for s in sp if _num(s.get("surprise_pct")) is not None]
+            if valid:
+                recent = valid[-1]
+                rsp = _num(recent.get("surprise_pct"))
+                if rsp is not None and rsp < 0:
+                    score -= 1
+                    factors.append(f"📉 決算：直近決算は予想を{abs(rsp):.0f}%下回った（ネガティブサプライズ）")
+                misses = sum(1 for s in valid if _num(s.get("surprise_pct")) < 0)
+                if len(valid) >= 2 and misses == len(valid):
+                    score -= 1
+                    factors.append(f"📉 決算：直近{len(valid)}回連続で予想未達 → 業績モメンタム悪化")
+            # 決算接近
+            if ecal.get("next_earnings_dates"):
+                ed = ecal["next_earnings_dates"][0]
+                result["next_earnings"] = str(ed)
+                try:
+                    days = (pd.Timestamp(ed) - pd.Timestamp.now()).days
+                    if 0 <= days <= 14:
+                        factors.append(f"⚠️ {days}日後に決算発表 → 結果次第で急変。保有分は決算跨ぎの是非を検討")
+                except Exception:
+                    pass
     except Exception:
         pass
 
-    # ── 総合判定 ──
-    if score >= 3:
+    # ── 総合判定（売りシグナル分析を優先的に反映） ──
+    sell_score = result.get("sell_signal", {}).get("sell_score", 0)
+
+    # テクニカルの売り圧力が非常に強い場合は割安でも売り警戒を優先
+    if sell_score >= 60 and score > -3:
+        verdict = "🔴 売り検討ゾーン（テクニカル悪化）"
+        advice = "割安でもテクニカルの売りサインが多数。戻り売り・一部利確を検討"
+    elif score >= 3:
         verdict = "🟢 買い増しゾーン"
         advice = "割安圏。分割して買い下がるのに適した水準"
     elif score >= 1:
@@ -553,7 +607,7 @@ def timing_judgment(symbol: str) -> dict:
         advice = "やや割安。急がず指値で拾う水準"
     elif score <= -3:
         verdict = "🔴 売り検討ゾーン"
-        advice = "割高圏。利益確定や一部売却を検討する水準"
+        advice = "割高＋テクニカル悪化。利益確定や一部売却を検討する水準"
     elif score <= -1:
         verdict = "🟠 高値警戒"
         advice = "やや割高。新規買いは控え、保有分は様子見"

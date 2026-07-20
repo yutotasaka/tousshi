@@ -325,6 +325,24 @@ def render_timing(sym: str):
             st.caption("内訳：" + " / ".join(f"{k} {v:.0f}倍" for k, v in comp.items())
                        + f"（業種: {tj.get('sector_jp','—')}）")
 
+    # 売りシグナル分析（25日線・MACDデッドクロス・RSI・出来高）
+    sell = tj.get("sell_signal")
+    if sell and "error" not in sell:
+        ss = sell.get("sell_score", 0)
+        st.markdown(f"**🔻 売りシグナル分析：{sell.get('level','')}（売り度 {ss}/100）**")
+        st.progress(ss / 100)
+        st.caption(sell.get("summary", ""))
+        if sell.get("sell_signals"):
+            for s in sell["sell_signals"]:
+                st.markdown(f"- {s}")
+        d = sell.get("detail", {})
+        if d:
+            sc1, sc2, sc3, sc4 = st.columns(4)
+            sc1.metric("25日線乖離", f"{d.get('disparity25_pct','—')}%" if d.get('disparity25_pct') is not None else "—")
+            sc2.metric("MACDデッドクロス", "発生" if d.get("macd_dead_cross") else "なし")
+            sc3.metric("RSI", f"{d.get('rsi14','—')}")
+            sc4.metric("出来高比", f"{d.get('volume_ratio','—')}倍" if d.get('volume_ratio') is not None else "—")
+
     # 判定理由
     st.markdown("**判定理由：**")
     for f in tj.get("factors", []):
