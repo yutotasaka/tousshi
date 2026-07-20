@@ -292,7 +292,18 @@ def render_timing(sym: str):
         box = st.error if "売り検討" in verdict else st.warning
     else:
         box = st.info
-    box(f"### {verdict}\n{advice}")
+    trend = tj.get("trend", "—")
+    trend_icon = "📈" if "上昇" in trend else ("📉" if "下降" in trend else "❔")
+    box(f"### {verdict}　｜　{trend_icon} {trend}\n{advice}")
+
+    # トレンド・RSI・アナリストを常時表示
+    i1, i2, i3, i4 = st.columns(4)
+    i1.metric("トレンド", f"{trend_icon} {trend}")
+    i2.metric("RSI(14)", f"{tj['rsi']:.0f}" if tj.get("rsi") is not None else "—")
+    i3.metric("アナリスト評価", tj.get("analyst_rating", "—"),
+              f"{tj['analyst_count']}名" if tj.get("analyst_count") else None, delta_color="off")
+    i4.metric("目標株価", f"{tj['analyst_target']:,.0f}" if tj.get("analyst_target") else "—",
+              f"{tj['analyst_upside_pct']:+.1f}%" if tj.get("analyst_upside_pct") is not None else None)
 
     # 妥当PERバンド（過去平均・業種標準・成長力のブレンド）
     if tj.get("fair_per") and tj.get("current_per"):

@@ -278,6 +278,32 @@ def check_criteria(
         f"{opm_pct:.1f}%" if opm_pct is not None else "取得不可", f"{min_op_margin:.0f}%以上",
         "本業でしっかり稼げているか")
 
+    # 12. アナリスト・レーティング評価
+    rec = (info.get("recommendationKey") or "").lower()
+    n_analysts = info.get("numberOfAnalystOpinions") or 0
+    tgt = _num(info.get("targetMeanPrice"))
+    price_now = _num(info.get("currentPrice")) or _num(info.get("regularMarketPrice"))
+    rec_jp = {
+        "strong_buy": "強気買い", "buy": "買い", "hold": "中立",
+        "underperform": "弱気", "sell": "売り",
+    }.get(rec, rec or "評価なし")
+    upside = None
+    if tgt and price_now:
+        upside = (tgt - price_now) / price_now * 100
+    if n_analysts >= 3 and rec:
+        rating_ok = rec in ("strong_buy", "buy") and (upside is None or upside > 0)
+        actual = f"{rec_jp}（{n_analysts}名）"
+        if upside is not None:
+            actual += f"／目標株価まで{upside:+.0f}%"
+        add("アナリスト評価", rating_ok, actual,
+            "買い推奨 かつ 目標株価に上値余地",
+            "プロのアナリストの評価と目標株価との差")
+    else:
+        add("アナリスト評価", None,
+            f"カバレッジ僅少（{n_analysts}名）" if rec else "評価なし",
+            "買い推奨 かつ 目標株価に上値余地",
+            "アナリストが少ない銘柄は情報が限られる点に注意")
+
     passed = sum(1 for c in checks if c["pass"] is True)
     total = sum(1 for c in checks if c["pass"] is not None)
 
@@ -443,18 +469,54 @@ def timing_judgment(symbol: str) -> dict:
         except Exception:
             ta = {}
     if ta and "error" not in ta:
+        # トレンドは必ず明示する
+        if ta.get("trend") == "UPTREND":
+            result["trend"] = "上昇トレンド"
+            factors.append("📈 テクニカル：上昇トレンド（株価が20日移動平均の上）")
+        else:
+            result["trend"] = "下降トレンド"
+            factors.append("📉 テクニカル：下降トレンド（株価が20日移動平均の下）→ 買うなら分割で（落ちるナイフに注意）")
         rsi = _num(ta.get("rsi14"))
         if rsi is not None:
+            result["rsi"] = round(rsi, 0)
             if rsi < 35:
                 score += 1
                 factors.append(f"RSI {rsi:.0f}：売られすぎ（短期反発しやすい水準）")
             elif rsi > 70:
                 score -= 1
                 factors.append(f"RSI {rsi:.0f}：買われすぎ（短期調整しやすい水準）")
-        if ta.get("trend") == "DOWNTREND":
-            factors.append("下降トレンド中 → 買うなら分割で（落ちるナイフに注意）")
         result["support"] = ta.get("support_20d")
         result["resistance"] = ta.get("resistance_20d")
+    else:
+        result["trend"] = "判定不可"
+        factors.append("テクニカル：価格データを取得できずトレンド判定不可")
+
+    # ── アナリスト・レーティング ──
+    rec = (info.get("recommendationKey") or "").lower()
+    n_analysts = info.get("numberOfAnalystOpinions") or 0
+    tgt = _num(info.get("targetMeanPrice"))
+    if n_analysts >= 3 and rec:
+        rec_jp = {"strong_buy": "強気買い", "buy": "買い", "hold": "中立",
+                  "underperform": "弱気", "sell": "売り"}.get(rec, rec)
+        upside_txt = ""
+        if tgt and current_price:
+            up = (tgt - current_price) / current_price * 100
+            upside_txt = f"、目標株価 {tgt:,.0f}（{up:+.0f}%）"
+            result["analyst_target"] = round(tgt, 1)
+            result["analyst_upside_pct"] = round(up, 1)
+            if up > 15:
+                score += 1
+            elif up < -5:
+                score -= 1
+        result["analyst_rating"] = rec_jp
+        result["analyst_count"] = n_analysts
+        if rec in ("strong_buy", "buy"):
+            factors.append(f"🏦 アナリスト評価：{rec_jp}（{n_analysts}名{upside_txt}）")
+        elif rec in ("sell", "underperform"):
+            score -= 1
+            factors.append(f"🏦 アナリスト評価：{rec_jp}（{n_analysts}名{upside_txt}）→ プロは弱気")
+        else:
+            factors.append(f"🏦 アナリスト評価：{rec_jp}（{n_analysts}名{upside_txt}）")
 
     # ── ニュース基調 ──
     news = get_stock_news(symbol, 8)
