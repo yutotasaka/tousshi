@@ -13,6 +13,7 @@ from tools.market_data import get_price_history
 from tools.technical_analysis import run_technical_analysis, sell_signal_analysis
 from tools.fundamentals import get_earnings_calendar
 from tools.news_feed import get_stock_news
+from tools.market_environment import get_macro_environment, assess_macro_impact
 
 
 def _num(v):
@@ -589,6 +590,29 @@ def timing_judgment(symbol: str) -> dict:
                         factors.append(f"⚠️ {days}日後に決算発表 → 結果次第で急変。保有分は決算跨ぎの是非を検討")
                 except Exception:
                     pass
+    except Exception:
+        pass
+
+    # ── マクロ環境（金利・為替・政治）の影響 ──
+    try:
+        macro = get_macro_environment()
+        macro_info = dict(info)
+        macro_info["_symbol"] = symbol
+        mi = assess_macro_impact(macro_info, macro)
+        score += mi["score"]
+        result["macro_score"] = mi["score"]
+        result["macro_env"] = {
+            "rate_10y": macro.get("rate_10y"),
+            "rate_trend": macro.get("rate_trend"),
+            "usdjpy": macro.get("usdjpy"),
+            "yen_trend": macro.get("yen_trend"),
+            "political_risk": macro.get("political_risk"),
+            "vix": macro.get("vix"),
+        }
+        if mi["factors"]:
+            factors.append(f"【マクロ環境の影響】（調整 {mi['score']:+d}）")
+            for f in mi["factors"]:
+                factors.append(f"　└ {f}")
     except Exception:
         pass
 

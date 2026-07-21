@@ -417,6 +417,20 @@ def render_timing(sym: str):
             sc3.metric("RSI", f"{d.get('rsi14','—')}")
             sc4.metric("出来高比", f"{d.get('volume_ratio','—')}倍" if d.get('volume_ratio') is not None else "—")
 
+    # マクロ環境（金利・為替・政治）
+    me = tj.get("macro_env")
+    if me:
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("米10年金利", f"{me['rate_10y']}%" if me.get("rate_10y") is not None else "—",
+                   me.get("rate_trend"), delta_color="off")
+        mc2.metric("ドル円", f"{me['usdjpy']:,.1f}" if me.get("usdjpy") is not None else "—",
+                   me.get("yen_trend"), delta_color="off")
+        mc3.metric("VIX(恐怖指数)", f"{me['vix']}" if me.get("vix") is not None else "—")
+        mc4.metric("政治リスク", me.get("political_risk", "—"))
+        adj = tj.get("macro_score", 0)
+        if adj:
+            st.caption(f"マクロ環境による判定調整： {adj:+d}点")
+
     # 判定理由
     st.markdown("**判定理由：**")
     for f in tj.get("factors", []):
